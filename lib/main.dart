@@ -333,7 +333,7 @@ class _LoginScreenState extends State<LoginScreen> {
       ) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.1), // Corregido: withValues
+        color: Colors.white.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(12),
       ),
       child: TextField(
@@ -384,6 +384,43 @@ class _InfraccionFormState extends State<InfraccionForm> {
   String? _precisionGps;
   bool _subiendo = false;
   final ImagePicker _picker = ImagePicker();
+
+  // Diccionario de marcas y modelos sugeridos
+  final Map<String, List<String>> _vehiculosSugeridos = {
+    'TOYOTA': ['COROLLA', 'HILUX', 'ETIOS', 'YARIS', 'SW4', 'PRIUS'],
+    'FORD': ['RANGER', 'FOCUS', 'FIESTA', 'KA', 'ECOSPORT', 'TERRITORY', 'F-150'],
+    'FIAT': ['CRONOS', 'TORO', 'MOBI', 'ARGO', 'PALIO', 'UNO', 'STRADA', 'PULSE'],
+    'VOLKSWAGEN': ['GOL', 'AMAROK', 'POLO', 'VIRTUS', 'T-CROSS', 'TAOS', 'NIVUS', 'VENTO'],
+    'RENAULT': ['SANDERO', 'LOGAN', 'KANGOO', 'ALASKAN', 'DUSTER', 'KWID', 'STEPWAY', 'OROCH'],
+    'CHEVROLET': ['ONIX', 'CRUZE', 'S10', 'TRACKER', 'JOY', 'SPIN', 'EQUINOX'],
+    'PEUGEOT': ['208', '2008', '308', '408', 'PARTNER', '3008', '5008'],
+    'CITROEN': ['C3', 'C4 CACTUS', 'BERLINGO', 'C5 AIRCROSS'],
+    'HONDA': ['CIVIC', 'HR-V', 'FIT', 'CR-V', 'CITY'],
+    'NISSAN': ['FRONTIER', 'VERSA', 'KICKS', 'SENTRA', 'X-TRAIL'],
+    'HYUNDAI': ['TUCSON', 'CRETA', 'HB20', 'KONA'],
+    'JEEP': ['RENEGADE', 'COMPASS', 'COMMANDER', 'WRANGLER'],
+    'MERCEDES-BENZ': ['CLASE A', 'CLASE C', 'CLASE E', 'SPRINTER', 'GLC', 'GLE'],
+    'AUDI': ['A1', 'A3', 'A4', 'A5', 'Q2', 'Q3', 'Q5'],
+    'BMW': ['SERIE 1', 'SERIE 3', 'SERIE 5', 'X1', 'X3', 'X5'],
+    'KIA': ['RIO', 'PICANTO', 'SPORTAGE', 'SORENTO', 'CERATO'],
+    'CHERY': ['TIGGO 2', 'TIGGO 3', 'TIGGO 4', 'QQ'],
+  };
+
+  // Sugerencias de infracciones comunes
+  final List<String> _infraccionesSugeridas = [
+    'ESTACIONAMIENTO EN DOBLE FILA',
+    'ESTACIONAMIENTO SOBRE SENDA PEATONAL',
+    'ESTACIONAMIENTO EN OCHAVA',
+    'ESTACIONAMIENTO FRENTE A GARAJE/COCHERA',
+    'ESTACIONAMIENTO EN LUGAR PROHIBIDO',
+    'ESTACIONAMIENTO SOBRE VEREDA',
+    'ESTACIONAMIENTO EN RESERVADO DISCAPACITADOS',
+    'ESTACIONAMIENTO EN RESERVADO CARGA Y DESCARGA',
+    'ESTACIONAMIENTO EN SENTIDO CONTRARIO',
+    'OBSTRUCCIÓN DE RAMPA PARA DISCAPACITADOS',
+    'SIN TICKET DE ESTACIONAMIENTO MEDIDO',
+    'TICKET DE ESTACIONAMIENTO VENCIDO',
+  ];
 
   @override
   void initState() {
@@ -468,7 +505,18 @@ class _InfraccionFormState extends State<InfraccionForm> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Registro exitoso')));
       _formKey.currentState!.reset();
-      setState(() { _imagenPatente = null; _imagenEntorno = null; _ubicacionGps = "No obtenida"; });
+      setState(() { 
+        _imagenPatente = null; 
+        _imagenEntorno = null; 
+        _ubicacionGps = "No obtenida";
+        _patenteController.clear();
+        _marcaController.clear();
+        _modeloController.clear();
+        _calleController.clear();
+        _numeroController.clear();
+        _tipoInfraccionController.clear();
+        _observacionesController.clear();
+      });
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
@@ -476,9 +524,87 @@ class _InfraccionFormState extends State<InfraccionForm> {
     }
   }
 
+  Widget _buildAutocompleteField({
+    required TextEditingController controller,
+    required String label,
+    required List<String> options,
+    Function(String)? onChanged,
+    IconData? icon,
+  }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    
+    return Autocomplete<String>(
+      optionsBuilder: (TextEditingValue textEditingValue) {
+        if (textEditingValue.text.isEmpty) {
+          return options; // Muestra todas las sugerencias al tocar el campo si está vacío
+        }
+        return options.where((String option) => option.contains(textEditingValue.text.toUpperCase()));
+      },
+      onSelected: (String selection) {
+        controller.text = selection;
+        if (onChanged != null) onChanged(selection);
+      },
+      fieldViewBuilder: (context, textController, focusNode, onFieldSubmitted) {
+        if (controller.text != textController.text) {
+          textController.text = controller.text;
+        }
+
+        return TextFormField(
+          controller: textController,
+          focusNode: focusNode,
+          inputFormatters: [UpperCaseTextFormatter()],
+          decoration: InputDecoration(
+            labelText: label,
+            filled: true,
+            fillColor: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white,
+            prefixIcon: icon != null ? Icon(icon) : null,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.grey[300]!)),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.grey[300]!)),
+          ),
+          onChanged: (value) {
+            controller.text = value.toUpperCase();
+            if (onChanged != null) onChanged(value.toUpperCase());
+          },
+          validator: (v) => v!.isEmpty ? 'Requerido' : null,
+        );
+      },
+      optionsViewBuilder: (context, onSelected, options) {
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              width: MediaQuery.of(context).size.width * 0.85, // Más ancho para el listado de infracciones
+              constraints: const BoxConstraints(maxHeight: 250),
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: options.length,
+                itemBuilder: (context, index) {
+                  final String option = options.elementAt(index);
+                  return ListTile(
+                    title: Text(option, style: const TextStyle(fontSize: 13)),
+                    onTap: () => onSelected(option),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    
+    List<String> modelosDisponibles = [];
+    if (_marcaController.text.isNotEmpty && _vehiculosSugeridos.containsKey(_marcaController.text)) {
+      modelosDisponibles = _vehiculosSugeridos[_marcaController.text]!;
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Column(
@@ -501,10 +627,25 @@ class _InfraccionFormState extends State<InfraccionForm> {
           child: Column(children: [
             _buildField(_patenteController, 'Patente', Icons.directions_car),
             const SizedBox(height: 16),
-            Row(children: [
-              Expanded(child: _buildField(_marcaController, 'Marca', null)),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+              Expanded(
+                child: _buildAutocompleteField(
+                  controller: _marcaController, 
+                  label: 'Marca', 
+                  options: _vehiculosSugeridos.keys.toList(),
+                  onChanged: (val) => setState(() {}),
+                )
+              ),
               const SizedBox(width: 16),
-              Expanded(child: _buildField(_modeloController, 'Modelo', null)),
+              Expanded(
+                child: _buildAutocompleteField(
+                  controller: _modeloController, 
+                  label: 'Modelo', 
+                  options: modelosDisponibles
+                )
+              ),
             ]),
             const SizedBox(height: 24),
             _buildField(_calleController, 'Calle/Ruta', Icons.map),
@@ -517,7 +658,12 @@ class _InfraccionFormState extends State<InfraccionForm> {
               Expanded(child: _buildImageCard('Foto Entorno', _imagenEntorno, () => _pickImage(false))),
             ]),
             const SizedBox(height: 24),
-            _buildField(_tipoInfraccionController, 'Tipo de Infracción', Icons.report_problem),
+            _buildAutocompleteField(
+              controller: _tipoInfraccionController,
+              label: 'Tipo de Infracción',
+              options: _infraccionesSugeridas,
+              icon: Icons.report_problem,
+            ),
             const SizedBox(height: 16),
             _buildField(_observacionesController, 'Observaciones', Icons.notes, maxLines: 3),
             const SizedBox(height: 32),
@@ -546,7 +692,7 @@ class _InfraccionFormState extends State<InfraccionForm> {
       decoration: InputDecoration(
         labelText: label,
         filled: true,
-        fillColor: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white, // Corregido: withValues
+        fillColor: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white,
         prefixIcon: icon != null ? Icon(icon) : null,
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.grey[300]!)),
         enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.grey[300]!)),
@@ -566,7 +712,7 @@ class _InfraccionFormState extends State<InfraccionForm> {
           height: 130,
           width: double.infinity,
           decoration: BoxDecoration(
-              color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white, // Corregido: withValues
+              color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white,
               border: Border.all(color: isDark ? Colors.white24 : Colors.grey[300]!),
               borderRadius: BorderRadius.circular(12)
           ),
