@@ -8,6 +8,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
+// Importación de ML Kit para reconocimiento de texto
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
 class InfraccionForm extends StatefulWidget {
   final String localidadId;
@@ -36,6 +38,9 @@ class _InfraccionFormState extends State<InfraccionForm> {
   bool _subiendo = false;
   String _estadoSubida = "";
   final ImagePicker _picker = ImagePicker();
+
+  // Inicializamos el reconocedor de texto de Google
+  final TextRecognizer _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
   final Map<String, List<String>> _vehiculosSugeridos = {
     'TOYOTA': ['COROLLA', 'HILUX', 'ETIOS', 'YARIS', 'SW4', 'PRIUS'],
@@ -80,6 +85,12 @@ class _InfraccionFormState extends State<InfraccionForm> {
     });
   }
 
+  @override
+  void dispose() {
+    _textRecognizer.close();
+    super.dispose();
+  }
+
   Future<void> _logout() async => await FirebaseAuth.instance.signOut();
 
   Future<void> _obtenerUbicacion() async {
@@ -101,6 +112,68 @@ class _InfraccionFormState extends State<InfraccionForm> {
       if (!mounted) return;
       setState(() => isPatente ? _imagenPatente = image : _imagenEntorno = image);
       _obtenerUbicacion();
+
+      if (isPatente) {
+        _procesarImagenConMLKit(image.path);
+      }
+    }
+  }
+
+  Future<void> _procesarImagenConMLKit(String path) async {
+    try {
+      final inputImage = InputImage.fromFilePath(path);
+      final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
+
+      // RegEx para patentes argentinas:
+      // 1. Mercosur: AA123AA
+      // 2. Viejas: AAA123
+      final regExpPatente = RegExp(r'([A-Z]{2}\d{3}[A-Z]{2})|([A-Z]{3}\d{3})');
+
+      String todoElTextoDetectado = "";
+
+      // Primero recolectamos todo el texto de la imagen para búsqueda de marca/modelo
+      for (TextBlock block in recognizedText.blocks) {
+        for (TextLine line in block.lines) {
+          todoElTextoDetectado += " ${line.text.toUpperCase()}";
+
+          // --- DETECTAR PATENTE (Prioridad por línea para mayor precisión) ---
+          String textoLimpioLinea = line.text.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+          Iterable<Match> matches = regExpPatente.allMatches(textoLimpioLinea);
+          if (matches.isNotEmpty) {
+            setState(() {
+              _patenteController.text = matches.first.group(0)!;
+            });
+          }
+        }
+      }
+
+      // Limpieza global para búsqueda de vehículos (sin símbolos)
+      String textoLimpioGlobal = todoElTextoDetectado.replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+      // --- DETECTAR MARCA Y MODELO (Búsqueda global flexible) ---
+      for (var entry in _vehiculosSugeridos.entries) {
+        String marcaSugerida = entry.key;
+
+        // Verificamos si la marca está presente en el texto original o el limpio
+        if (todoElTextoDetectado.contains(marcaSugerida) || textoLimpioGlobal.contains(marcaSugerida)) {
+          setState(() {
+            _marcaController.text = marcaSugerida;
+          });
+
+          // Si encontramos marca, buscamos el modelo asociado dentro de todo el texto
+          for (String modeloSugerido in entry.value) {
+            if (todoElTextoDetectado.contains(modeloSugerido) || textoLimpioGlobal.contains(modeloSugerido)) {
+              setState(() {
+                _modeloController.text = modeloSugerido;
+              });
+              break;
+            }
+          }
+          break; // Marca encontrada, salimos del bucle principal
+        }
+      }
+    } catch (e) {
+      debugPrint("Error en ML Kit: $e");
     }
   }
 
@@ -119,33 +192,24 @@ class _InfraccionFormState extends State<InfraccionForm> {
 
     try {
       final now = DateTime.now();
-
-      // Formateo de nombres y carpetas según requerimiento
       final dayFolder = DateFormat('dd-MM-yyyy').format(now);
       final timestamp = DateFormat('ddMMyyyyHHmmss').format(now);
       final patenteValue = _patenteController.text.toUpperCase().replaceAll(' ', '');
-
-      // ID único de la infracción para Firebase
       final idInfraccion = FirebaseFirestore.instance.collection('infracciones').doc().id;
-
-      // Ruta de almacenamiento: infracciones / localidad_id / dia / (archivos sueltos aquí)
       final storagePath = "infracciones/${widget.localidadId}/$dayFolder";
 
-      // 1. Subir Foto Patente
       setState(() => _estadoSubida = "Subiendo foto de patente...");
       final nameFotoPatente = "${timestamp}_${idInfraccion}_foto_patente_$patenteValue.jpg";
       final refP = FirebaseStorage.instance.ref().child("$storagePath/$nameFotoPatente");
       await refP.putFile(File(_imagenPatente!.path));
       final urlP = await refP.getDownloadURL();
 
-      // 2. Subir Foto Entorno
       setState(() => _estadoSubida = "Subiendo foto de entorno...");
       final nameFotoEntorno = "${timestamp}_${idInfraccion}_foto_entorno_$patenteValue.jpg";
       final refE = FirebaseStorage.instance.ref().child("$storagePath/$nameFotoEntorno");
       await refE.putFile(File(_imagenEntorno!.path));
       final urlE = await refE.getDownloadURL();
 
-      // Preparar datos para el archivo .txt y Firestore
       final Map<String, dynamic> datos = {
         'infraccion_id': idInfraccion,
         'localidad_id': widget.localidadId,
@@ -164,7 +228,6 @@ class _InfraccionFormState extends State<InfraccionForm> {
         'registrado_por': widget.userName,
       };
 
-      // 3. Subir Archivo de Datos (.txt)
       setState(() => _estadoSubida = "Generando archivo de datos...");
       String txtContent = const JsonEncoder.withIndent('  ').convert(datos);
       final nameArchivoDato = "${timestamp}_${idInfraccion}_dato_$patenteValue.txt";
@@ -172,7 +235,6 @@ class _InfraccionFormState extends State<InfraccionForm> {
       await refTxt.putString(txtContent, format: PutStringFormat.raw, metadata: SettableMetadata(contentType: 'text/plain'));
       final urlTxt = await refTxt.getDownloadURL();
 
-      // 4. Registrar en Firestore (Base de Datos)
       setState(() => _estadoSubida = "Finalizando registro en base de datos...");
       await FirebaseFirestore.instance.collection('infracciones').doc(idInfraccion).set({
         ...datos,
@@ -188,7 +250,6 @@ class _InfraccionFormState extends State<InfraccionForm> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Registro exitoso')));
 
-      // Limpiar formulario al finalizar
       _formKey.currentState!.reset();
       setState(() {
         _imagenPatente = null;

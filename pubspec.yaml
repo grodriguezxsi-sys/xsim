@@ -19,6 +19,8 @@ dependencies:
   firebase_auth: ^5.7.0
   intl: ^0.20.2
   blue_thermal_printer: ^1.2.3
+  google_mlkit_text_recognition: ^0.13.0
+  google_mlkit_commons: ^0.8.0
 
 dev_dependencies:
   flutter_test:

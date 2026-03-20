@@ -16,8 +16,7 @@ android {
     }
 
     kotlinOptions {
-        jvmTarget = "17"
-    }
+        jvmTarget = "17"}
 
     defaultConfig {
         applicationId = "com.xpertech.xsim.xsim"
@@ -30,7 +29,8 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("debug")
-        }
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+    }
     }
 
     // PARCHE CRÍTICO PARA LIBRERÍAS SIN NAMESPACE (COMO BLUE_THERMAL_PRINTER)
