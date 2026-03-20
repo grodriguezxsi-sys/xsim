@@ -1,3 +1,4 @@
+gitignore
 # https://dart.dev/guides/libraries/private-files
 # Created by https://www.toptal.com/developers/gitignore/api/flutter,androidstudio,visualstudiocode
 
@@ -16,48 +17,28 @@
 
 ### Flutter ###
 # Check out https://flutter.dev/to/ignore-for-git for more information
-
-# The Python binary is required for Flutter to run.
-# If you use a different path for Python, you can add it here.
-# python/
-
-# The Flutter tool creates a .dart_tool/ directory for its own use.
 .dart_tool/
-
-# The Flutter tool creates a .flutter-plugins file for its own use.
 .flutter-plugins
-
-# The Flutter tool creates a .flutter-plugins-dependencies file for its own use.
 .flutter-plugins-dependencies
-
-# The Flutter tool creates a .packages file for its own use.
 .packages
-
-# The Flutter tool creates a .pub-cache/ directory for its own use.
 .pub-cache/
-
-# The Flutter tool creates a build/ directory for its own use.
 build/
-
-# Files created by Flutter during development
 .metadata
 generated/
 
 ### Android ###
-# Android-specific files
 android/local.properties
 android/key.properties
-android/app/src/main/res/values/google-services.json
-android/app/src/main/res/xml/network_security_config.xml
 android/.gradle/
 android/app/build/
 android/captures/
 android/gradle/
 android/gradlew
 android/gradlew.bat
+# Seguridad Firebase Android
+android/app/google-services.json
 
 ### iOS ###
-# iOS-specific files
 ios/.DS_Store
 ios/.ipynb_checkpoints/
 ios/Flutter/Generated.xcconfig
@@ -69,6 +50,12 @@ ios/Runner/GeneratedPluginRegistrant.m
 ios/Pods/
 ios/.symlinks/
 ios/Config/
+# Seguridad Firebase iOS
+ios/Runner/GoogleService-Info.plist
+
+### Firebase / Secretos ###
+# Muy importante: Ignorar las opciones generadas que contienen IDs de tu proyecto
+lib/firebase_options.dart
 
 ### VS Code ###
 .vscode/
@@ -77,6 +64,5 @@ ios/Config/
 .DS_Store
 
 ### Windows ###
-# Windows-specific files
 desktop/
 windows/
