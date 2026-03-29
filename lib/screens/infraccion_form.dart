@@ -1,15 +1,12 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:xsim/services/deteccion_service.dart';
 import 'dart:io';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:geocoding/geocoding.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:intl/intl.dart';
-// Importación de ML Kit para reconocimiento de texto
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
 class InfraccionForm extends StatefulWidget {
   final String localidadId;
@@ -23,6 +20,9 @@ class InfraccionForm extends StatefulWidget {
 
 class _InfraccionFormState extends State<InfraccionForm> {
   final _formKey = GlobalKey<FormState>();
+
+  static const Color naranjaXsim = Color(0xFFFF8C00); 
+
   final _patenteController = TextEditingController();
   final _marcaController = TextEditingController();
   final _modeloController = TextEditingController();
@@ -34,456 +34,495 @@ class _InfraccionFormState extends State<InfraccionForm> {
   XFile? _imagenPatente;
   XFile? _imagenEntorno;
   String _ubicacionGps = "No obtenida";
-  String? _precisionGps;
   bool _subiendo = false;
   String _estadoSubida = "";
+  bool _patenteDetectadaExito = false; 
+  
   final ImagePicker _picker = ImagePicker();
-
-  // Inicializamos el reconocedor de texto de Google
-  final TextRecognizer _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
-
-  final Map<String, List<String>> _vehiculosSugeridos = {
-    'TOYOTA': ['COROLLA', 'HILUX', 'ETIOS', 'YARIS', 'SW4', 'PRIUS'],
-    'FORD': ['RANGER', 'FOCUS', 'FIESTA', 'KA', 'ECOSPORT', 'TERRITORY', 'F-150'],
-    'FIAT': ['CRONOS', 'TORO', 'MOBI', 'ARGO', 'PALIO', 'UNO', 'STRADA', 'PULSE'],
-    'VOLKSWAGEN': ['GOL', 'AMAROK', 'POLO', 'VIRTUS', 'T-CROSS', 'TAOS', 'NIVUS', 'VENTO'],
-    'RENAULT': ['SANDERO', 'LOGAN', 'KANGOO', 'ALASKAN', 'DUSTER', 'KWID', 'STEPWAY', 'OROCH'],
-    'CHEVROLET': ['ONIX', 'CRUZE', 'S10', 'TRACKER', 'JOY', 'SPIN', 'EQUINOX'],
-    'PEUGEOT': ['208', '2008', '308', '408', 'PARTNER', '3008', '5008'],
-    'CITROEN': ['C3', 'C4 CACTUS', 'BERLINGO', 'C5 AIRCROSS'],
-    'HONDA': ['CIVIC', 'HR-V', 'FIT', 'CR-V', 'CITY'],
-    'NISSAN': ['FRONTIER', 'VERSA', 'KICKS', 'SENTRA', 'X-TRAIL'],
-    'HYUNDAI': ['TUCSON', 'CRETA', 'HB20', 'KONA'],
-    'JEEP': ['RENEGADE', 'COMPASS', 'COMMANDER', 'WRANGLER'],
-    'MERCEDES-BENZ': ['CLASE A', 'CLASE C', 'CLASE E', 'SPRINTER', 'GLC', 'GLE'],
-    'AUDI': ['A1', 'A3', 'A4', 'A5', 'Q2', 'Q3', 'Q5'],
-    'BMW': ['SERIE 1', 'SERIE 3', 'SERIE 5', 'X1', 'X3', 'X5'],
-    'KIA': ['RIO', 'PICANTO', 'SPORTAGE', 'SORENTO', 'CERATO'],
-    'CHERY': ['TIGGO 2', 'TIGGO 3', 'TIGGO 4', 'QQ'],
-  };
-
-  final List<String> _infraccionesSugeridas = [
-    'ESTACIONAMIENTO EN DOBLE FILA',
-    'ESTACIONAMIENTO SOBRE SENDA PEATONAL',
-    'ESTACIONAMIENTO EN OCHAVA',
-    'ESTACIONAMIENTO FRENTE A GARAJE/COCHERA',
-    'ESTACIONAMIENTO EN LUGAR PROHIBIDO',
-    'ESTACIONAMIENTO SOBRE VEREDA',
-    'ESTACIONAMIENTO EN RESERVADO DISCAPACITADOS',
-    'ESTACIONAMIENTO EN RESERVADO CARGA Y DESCARGA',
-    'ESTACIONAMIENTO EN SENTIDO CONTRARIO',
-    'OBSTRUCCIÓN DE RAMPA PARA DISCAPACITADOS',
-    'SIN TICKET DE ESTACIONAMIENTO MEDIDO',
-    'TICKET DE ESTACIONAMIENTO VENCIDO',
-  ];
+  final DeteccionVehiculoService _deteccionService = DeteccionVehiculoService();
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      Geolocator.requestPermission();
-    });
+    _patenteController.addListener(_onPatenteChanged);
+  }
+
+  void _onPatenteChanged() {
+    if (_patenteController.text.isEmpty && _patenteDetectadaExito) {
+      setState(() => _patenteDetectadaExito = false);
+    }
   }
 
   @override
   void dispose() {
-    _textRecognizer.close();
+    _deteccionService.dispose();
+    _patenteController.removeListener(_onPatenteChanged);
+    _patenteController.dispose();
+    _marcaController.dispose();
+    _modeloController.dispose();
+    _calleController.dispose();
+    _numeroController.dispose();
+    _tipoInfraccionController.dispose();
+    _observacionesController.dispose();
     super.dispose();
   }
 
   Future<void> _logout() async => await FirebaseAuth.instance.signOut();
 
-  Future<void> _obtenerUbicacion() async {
+  Future<void> _obtenerUbicacion({bool actualizarDireccion = true}) async {
     try {
-      Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return;
+      }
+      
+      if (permission == LocationPermission.deniedForever) return;
+
+      if (actualizarDireccion) {
+        setState(() {
+          _ubicacionGps = "Obteniendo...";
+          _calleController.text = "Buscando...";
+          _numeroController.text = "";
+        });
+      }
+
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.bestForNavigation, 
+        timeLimit: const Duration(seconds: 15),
+      );
+      
       if (!mounted) return;
-      setState(() {
-        _ubicacionGps = "${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}";
-        _precisionGps = "${position.accuracy.toStringAsFixed(1)}m";
-      });
-    } catch (_) {
-      if (mounted) setState(() => _ubicacionGps = "Error GPS");
+      setState(() => _ubicacionGps = "${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}");
+
+      if (actualizarDireccion) {
+        try {
+          List<Placemark> placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
+          if (placemarks.isNotEmpty) {
+            Placemark place = placemarks[0];
+            setState(() {
+              _calleController.text = place.thoroughfare ?? "";
+              _numeroController.text = place.subThoroughfare ?? "";
+            });
+          }
+        } catch (e) {
+          if (mounted) _calleController.clear();
+          debugPrint("Error en Geocoding: $e");
+        }
+      }
+
+    } catch (e) {
+      if (mounted) {
+        setState(() => _ubicacionGps = "Error al obtener");
+        if (actualizarDireccion) _calleController.clear();
+      }
+      debugPrint("Error GPS: $e");
     }
   }
 
   Future<void> _pickImage(bool isPatente) async {
-    final XFile? image = await _picker.pickImage(source: ImageSource.camera, imageQuality: 70);
-    if (image != null) {
-      if (!mounted) return;
-      setState(() => isPatente ? _imagenPatente = image : _imagenEntorno = image);
-      _obtenerUbicacion();
-
-      if (isPatente) {
-        _procesarImagenConMLKit(image.path);
-      }
-    }
-  }
-
-  Future<void> _procesarImagenConMLKit(String path) async {
     try {
-      final inputImage = InputImage.fromFilePath(path);
-      final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
-
-      // RegEx para patentes argentinas:
-      // 1. Mercosur: AA123AA
-      // 2. Viejas: AAA123
-      final regExpPatente = RegExp(r'([A-Z]{2}\d{3}[A-Z]{2})|([A-Z]{3}\d{3})');
-
-      String todoElTextoDetectado = "";
-
-      // Primero recolectamos todo el texto de la imagen para búsqueda de marca/modelo
-      for (TextBlock block in recognizedText.blocks) {
-        for (TextLine line in block.lines) {
-          todoElTextoDetectado += " ${line.text.toUpperCase()}";
-
-          // --- DETECTAR PATENTE (Prioridad por línea para mayor precisión) ---
-          String textoLimpioLinea = line.text.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
-          Iterable<Match> matches = regExpPatente.allMatches(textoLimpioLinea);
-          if (matches.isNotEmpty) {
-            setState(() {
-              _patenteController.text = matches.first.group(0)!;
-            });
-          }
-        }
-      }
-
-      // Limpieza global para búsqueda de vehículos (sin símbolos)
-      String textoLimpioGlobal = todoElTextoDetectado.replaceAll(RegExp(r'[^A-Z0-9]'), '');
-
-      // --- DETECTAR MARCA Y MODELO (Búsqueda global flexible) ---
-      for (var entry in _vehiculosSugeridos.entries) {
-        String marcaSugerida = entry.key;
-
-        // Verificamos si la marca está presente en el texto original o el limpio
-        if (todoElTextoDetectado.contains(marcaSugerida) || textoLimpioGlobal.contains(marcaSugerida)) {
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.camera, 
+        imageQuality: 60,
+      );
+      
+      if (image != null) {
+        if (isPatente) {
           setState(() {
-            _marcaController.text = marcaSugerida;
+            _imagenPatente = image;
+            _calleController.clear();
+            _numeroController.clear();
           });
-
-          // Si encontramos marca, buscamos el modelo asociado dentro de todo el texto
-          for (String modeloSugerido in entry.value) {
-            if (todoElTextoDetectado.contains(modeloSugerido) || textoLimpioGlobal.contains(modeloSugerido)) {
-              setState(() {
-                _modeloController.text = modeloSugerido;
-              });
-              break;
-            }
-          }
-          break; // Marca encontrada, salimos del bucle principal
+          _obtenerUbicacion(actualizarDireccion: true);
+          _ejecutarDeteccionPro(image.path);
+        } else {
+          setState(() {
+            _imagenEntorno = image;
+          });
         }
       }
     } catch (e) {
-      debugPrint("Error en ML Kit: $e");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al abrir la cámara: $e')),
+      );
+    }
+  }
+
+  Future<void> _ejecutarDeteccionPro(String path) async {
+    setState(() {
+       _estadoSubida = "Analizando vehículo...";
+       _patenteDetectadaExito = false;
+    });
+    try {
+      final resultados = await _deteccionService.procesarYDeteccionDual(path);
+      if (!mounted) return;
+      setState(() {
+        if (resultados['patente'] != null && resultados['patente']!.isNotEmpty) {
+          _patenteController.text = resultados['patente']!;
+          _patenteDetectadaExito = true;
+        }
+        if (resultados['marca'] != null && resultados['marca']!.isNotEmpty) {
+          _marcaController.text = resultados['marca']!;
+        }
+        if (resultados['modelo'] != null && resultados['modelo']!.isNotEmpty) {
+          _modeloController.text = resultados['modelo']!;
+        }
+      });
+    } catch (e) {
+      debugPrint("Error en detección: $e");
+    } finally {
+      if (mounted) setState(() => _estadoSubida = "");
     }
   }
 
   Future<void> _registrarInfraccion() async {
-    FocusScope.of(context).unfocus();
-
-    if (!_formKey.currentState!.validate() || _imagenPatente == null || _imagenEntorno == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Faltan datos o fotos')));
-      return;
-    }
-
+    if (!_formKey.currentState!.validate()) return;
+    
     setState(() {
       _subiendo = true;
-      _estadoSubida = "Iniciando proceso...";
+      _estadoSubida = "Guardando infracción...";
     });
 
     try {
-      final now = DateTime.now();
-      final dayFolder = DateFormat('dd-MM-yyyy').format(now);
-      final timestamp = DateFormat('ddMMyyyyHHmmss').format(now);
-      final patenteValue = _patenteController.text.toUpperCase().replaceAll(' ', '');
-      final idInfraccion = FirebaseFirestore.instance.collection('infracciones').doc().id;
-      final storagePath = "infracciones/${widget.localidadId}/$dayFolder";
-
-      setState(() => _estadoSubida = "Subiendo foto de patente...");
-      final nameFotoPatente = "${timestamp}_${idInfraccion}_foto_patente_$patenteValue.jpg";
-      final refP = FirebaseStorage.instance.ref().child("$storagePath/$nameFotoPatente");
-      await refP.putFile(File(_imagenPatente!.path));
-      final urlP = await refP.getDownloadURL();
-
-      setState(() => _estadoSubida = "Subiendo foto de entorno...");
-      final nameFotoEntorno = "${timestamp}_${idInfraccion}_foto_entorno_$patenteValue.jpg";
-      final refE = FirebaseStorage.instance.ref().child("$storagePath/$nameFotoEntorno");
-      await refE.putFile(File(_imagenEntorno!.path));
-      final urlE = await refE.getDownloadURL();
-
-      final Map<String, dynamic> datos = {
-        'infraccion_id': idInfraccion,
+      await FirebaseFirestore.instance.collection('infracciones').add({
         'localidad_id': widget.localidadId,
-        'patente': patenteValue,
+        'fecha': FieldValue.serverTimestamp(),
+        'registrado_por': widget.userName,
+        'patente': _patenteController.text.toUpperCase(),
         'marca': _marcaController.text.toUpperCase(),
         'modelo': _modeloController.text.toUpperCase(),
         'ubicacion': {
           'calle_ruta': _calleController.text.toUpperCase(),
           'numero_km': _numeroController.text.toUpperCase(),
-          'gps': _ubicacionGps,
-          'precision': _precisionGps
         },
         'tipo_infraccion': _tipoInfraccionController.text.toUpperCase(),
         'observaciones': _observacionesController.text.toUpperCase(),
-        'fecha_hora': now.toIso8601String(),
-        'registrado_por': widget.userName,
-      };
-
-      setState(() => _estadoSubida = "Generando archivo de datos...");
-      String txtContent = const JsonEncoder.withIndent('  ').convert(datos);
-      final nameArchivoDato = "${timestamp}_${idInfraccion}_dato_$patenteValue.txt";
-      final refTxt = FirebaseStorage.instance.ref().child("$storagePath/$nameArchivoDato");
-      await refTxt.putString(txtContent, format: PutStringFormat.raw, metadata: SettableMetadata(contentType: 'text/plain'));
-      final urlTxt = await refTxt.getDownloadURL();
-
-      setState(() => _estadoSubida = "Finalizando registro en base de datos...");
-      await FirebaseFirestore.instance.collection('infracciones').doc(idInfraccion).set({
-        ...datos,
-        'foto_patente_url': urlP,
-        'foto_entorno_url': urlE,
-        'txt_url': urlTxt,
-        'nombre_archivo_patente': nameFotoPatente,
-        'nombre_archivo_entorno': nameFotoEntorno,
-        'nombre_archivo_dato': nameArchivoDato,
-        'fecha': FieldValue.serverTimestamp(),
+        'ubicacion_gps': _ubicacionGps,
       });
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Registro exitoso')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Infracción registrada correctamente')),
+      );
 
-      _formKey.currentState!.reset();
+      _patenteController.clear();
+      _marcaController.clear();
+      _modeloController.clear();
+      _calleController.clear();
+      _numeroController.clear();
+      _tipoInfraccionController.clear();
+      _observacionesController.clear();
       setState(() {
         _imagenPatente = null;
         _imagenEntorno = null;
         _ubicacionGps = "No obtenida";
-        _patenteController.clear();
-        _marcaController.clear();
-        _modeloController.clear();
-        _calleController.clear();
-        _numeroController.clear();
-        _tipoInfraccionController.clear();
-        _observacionesController.clear();
+        _patenteDetectadaExito = false;
       });
+
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al registrar: $e')),
+      );
     } finally {
-      if (mounted) setState(() => _subiendo = false);
+      if (mounted) {
+        setState(() {
+          _subiendo = false;
+          _estadoSubida = "";
+        });
+      }
     }
   }
 
-  Widget _buildAutocompleteField({
-    required TextEditingController controller,
-    required String label,
-    required List<String> options,
-    Function(String)? onChanged,
-    IconData? icon,
-  }) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return Autocomplete<String>(
-      optionsBuilder: (TextEditingValue textEditingValue) {
-        if (textEditingValue.text.isEmpty) return options;
-        return options.where((String option) => option.contains(textEditingValue.text.toUpperCase()));
-      },
-      onSelected: (String selection) {
-        controller.text = selection;
-        if (onChanged != null) onChanged(selection);
-      },
-      fieldViewBuilder: (context, textController, focusNode, onFieldSubmitted) {
-        if (controller.text != textController.text) textController.text = controller.text;
-        return TextFormField(
-          controller: textController,
-          focusNode: focusNode,
-          inputFormatters: [UpperCaseTextFormatter()],
-          decoration: InputDecoration(
-            labelText: label,
-            filled: true,
-            fillColor: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white,
-            prefixIcon: icon != null ? Icon(icon) : null,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.grey[300] ?? Colors.grey)),
-            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.grey[300] ?? Colors.grey)),
-          ),
-          onChanged: (value) {
-            controller.text = value.toUpperCase();
-            if (onChanged != null) onChanged(value.toUpperCase());
-          },
-          validator: (v) => v!.isEmpty ? 'Requerido' : null,
-        );
-      },
-      optionsViewBuilder: (context, onSelected, options) {
-        return Align(
-          alignment: Alignment.topLeft,
-          child: Material(
-            elevation: 4,
-            borderRadius: BorderRadius.circular(12),
-            child: Container(
-              width: MediaQuery.of(context).size.width * 0.85,
-              constraints: const BoxConstraints(maxHeight: 250),
-              child: ListView.builder(
-                padding: EdgeInsets.zero,
-                shrinkWrap: true,
-                itemCount: options.length,
-                itemBuilder: (context, index) {
-                  final String option = options.elementAt(index);
-                  return ListTile(
-                    title: Text(option, style: const TextStyle(fontSize: 13)),
-                    onTap: () => onSelected(option),
-                  );
-                },
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    List<String> modelosDisponibles = [];
-    if (_marcaController.text.isNotEmpty && _vehiculosSugeridos.containsKey(_marcaController.text)) {
-      modelosDisponibles = _vehiculosSugeridos[_marcaController.text]!;
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          children: [
-            Text(widget.localidadId, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w300)),
-            Text(widget.userName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        centerTitle: true,
-        leading: IconButton(
-          icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode),
-          onPressed: _subiendo ? null : widget.onThemeToggle,
-        ),
-        actions: [IconButton(onPressed: _subiendo ? null : _logout, icon: const Icon(Icons.logout))],
-      ),
-      body: Stack(
+  Widget _buildSectionTitle(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 20, bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SingleChildScrollView(
-            padding: const EdgeInsets.all(24.0),
-            child: Form(
-              key: _formKey,
-              child: Column(children: [
-                _buildField(_patenteController, 'Patente', Icons.directions_car),
-                const SizedBox(height: 16),
-                Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(child: _buildAutocompleteField(controller: _marcaController, label: 'Marca', options: _vehiculosSugeridos.keys.toList(), onChanged: (val) => setState(() {}), icon: Icons.factory)),
-                      const SizedBox(width: 16),
-                      Expanded(child: _buildAutocompleteField(controller: _modeloController, label: 'Modelo', options: modelosDisponibles, icon: Icons.category)),
-                    ]),
-                const SizedBox(height: 24),
-                _buildField(_calleController, 'Calle/Ruta', Icons.map),
-                const SizedBox(height: 16),
-                _buildField(_numeroController, 'Nro/Km', Icons.numbers, type: TextInputType.number),
-                const SizedBox(height: 24),
-                Row(children: [
-                  Expanded(child: _buildImageCard('Foto Patente', _imagenPatente, () => _pickImage(true))),
-                  const SizedBox(width: 16),
-                  Expanded(child: _buildImageCard('Foto Entorno', _imagenEntorno, () => _pickImage(false))),
-                ]),
-                const SizedBox(height: 24),
-                _buildAutocompleteField(controller: _tipoInfraccionController, label: 'Tipo de Infracción', options: _infraccionesSugeridas, icon: Icons.report_problem),
-                const SizedBox(height: 16),
-                _buildField(_observacionesController, 'Observaciones', Icons.notes, maxLines: 3),
-                const SizedBox(height: 32),
-                ElevatedButton(
-                  onPressed: _subiendo ? null : _registrarInfraccion,
-                  style: ElevatedButton.styleFrom(
-                      backgroundColor: isDark ? Colors.white : const Color(0xFF00162A),
-                      foregroundColor: isDark ? const Color(0xFF00162A) : Colors.white,
-                      minimumSize: const Size(double.infinity, 50),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                  child: _subiendo ? const SizedBox.shrink() : const Text('REGISTRAR INFRACCIÓN'),
-                ),
-              ]),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: naranjaXsim,
             ),
           ),
-
-          if (_subiendo) ...[
-            const ModalBarrier(dismissible: false, color: Colors.black54),
-            Center(
-              child: Container(
-                padding: const EdgeInsets.all(24),
-                margin: const EdgeInsets.symmetric(horizontal: 40),
-                decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF00162A) : Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10, spreadRadius: 2)]
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const CircularProgressIndicator(),
-                    const SizedBox(height: 24),
-                    Text(
-                        _estadoSubida,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)
-                    ),
-                    const SizedBox(height: 8),
-                    const Text("Por favor, no cierre la aplicación", style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  ],
-                ),
-              ),
-            ),
-          ],
+          const SizedBox(height: 4),
+          Container(
+            height: 1.5,
+            width: 40, // Línea corta y fina
+            color: naranjaXsim,
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildField(TextEditingController controller, String label, IconData? icon, {TextInputType type = TextInputType.text, int maxLines = 1}) {
+  Widget _buildField(TextEditingController controller, String label, IconData? icon, {TextInputType type = TextInputType.text, Widget? suffixIcon}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return TextFormField(
       controller: controller,
       keyboardType: type,
-      maxLines: maxLines,
-      enabled: !_subiendo,
       inputFormatters: [UpperCaseTextFormatter()],
+      style: const TextStyle(fontWeight: FontWeight.w500),
       decoration: InputDecoration(
         labelText: label,
+        labelStyle: TextStyle(
+          color: isDark ? Colors.white60 : Colors.black54, // TEXTO MÁS BRILLANTE EN DARK MODE
+          fontWeight: FontWeight.normal,
+        ),
         filled: true,
-        fillColor: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white,
-        prefixIcon: icon != null ? Icon(icon) : null,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.grey[300] ?? Colors.grey)),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.grey[300] ?? Colors.grey)),
+        fillColor: isDark ? Colors.white10 : Colors.grey[100],
+        prefixIcon: icon != null ? Icon(icon, color: isDark ? Colors.white70 : Colors.black45) : null,
+        suffixIcon: suffixIcon,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: naranjaXsim, width: 1.5),
+        ),
       ),
       validator: (v) => v!.isEmpty ? 'Requerido' : null,
     );
   }
 
-  Widget _buildImageCard(String label, XFile? image, VoidCallback onTap) {
+  Widget _buildAutocompleteField({required TextEditingController controller, required String label, required List<String> options, IconData? icon}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Column(children: [
-      Text(label, style: const TextStyle(fontWeight: FontWeight.w500)),
-      const SizedBox(height: 8),
-      InkWell(
-        onTap: _subiendo ? null : onTap,
-        child: Container(
-          height: 130,
-          width: double.infinity,
-          decoration: BoxDecoration(
-              color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white,
-              border: Border.all(color: isDark ? Colors.white24 : Colors.grey[300] ?? Colors.grey),
-              borderRadius: BorderRadius.circular(12)
+    return Autocomplete<String>(
+      optionsBuilder: (val) => val.text.isEmpty ? options : options.where((o) => o.contains(val.text.toUpperCase())),
+      onSelected: (s) => controller.text = s,
+      fieldViewBuilder: (ctx, fieldCtrl, node, submit) {
+        if (controller.text != fieldCtrl.text) fieldCtrl.text = controller.text;
+        return TextFormField(
+          controller: fieldCtrl,
+          focusNode: node,
+          inputFormatters: [UpperCaseTextFormatter()],
+          style: const TextStyle(fontWeight: FontWeight.w500),
+          decoration: InputDecoration(
+            labelText: label,
+            labelStyle: TextStyle(
+              color: isDark ? Colors.white60 : Colors.black54, // TEXTO MÁS BRILLANTE EN DARK MODE
+            ),
+            filled: true,
+            fillColor: isDark ? Colors.white10 : Colors.grey[100],
+            prefixIcon: icon != null ? Icon(icon, color: isDark ? Colors.white70 : Colors.black45) : null,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: naranjaXsim, width: 1.5),
+            ),
           ),
-          child: image == null
-              ? const Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.add_a_photo, size: 32), SizedBox(height: 8), Text('Capturar', style: TextStyle(fontSize: 12))])
-              : ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.file(File(image.path), fit: BoxFit.cover)),
-        ),
+          onChanged: (v) => controller.text = v.toUpperCase(),
+          validator: (v) => v!.isEmpty ? 'Requerido' : null,
+        );
+      },
+    );
+  }
+
+  Widget _buildImageCard(String label, XFile? image, VoidCallback onTap, VoidCallback onClear) {
+    return Column(children: [
+      Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+      const SizedBox(height: 8),
+      Stack(
+        children: [
+          InkWell(
+            onTap: image == null ? onTap : null, 
+            child: Container(
+              height: 120, width: double.infinity,
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey), 
+                borderRadius: BorderRadius.circular(12),
+                color: Theme.of(context).brightness == Brightness.dark ? Colors.white10 : Colors.grey[50],
+              ),
+              child: image == null 
+                  ? const Icon(Icons.add_a_photo, size: 40) 
+                  : ClipRRect(
+                      borderRadius: BorderRadius.circular(12), 
+                      child: Image.file(File(image.path), fit: BoxFit.cover)
+                    ),
+            ),
+          ),
+          if (image != null)
+            Positioned(
+              top: 5,
+              right: 5,
+              child: InkWell(
+                onTap: onClear,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: const BoxDecoration(
+                    color: Colors.red,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.close, color: Colors.white, size: 18),
+                ),
+              ),
+            ),
+        ],
       ),
     ]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    
+    final Map<String, List<String>> vehiculosSugeridos = {
+      'TOYOTA': ['COROLLA', 'HILUX', 'ETIOS', 'YARIS', 'SW4'],
+      'FORD': ['RANGER', 'FOCUS', 'FIESTA', 'KA', 'ECOSPORT'],
+      'FIAT': ['CRONOS', 'TORO', 'MOBI', 'ARGO', 'STRADA', 'PULSE'],
+      'VOLKSWAGEN': ['GOL', 'AMAROK', 'POLO', 'TAOS', 'NIVUS', 'VENTO'],
+      'RENAULT': ['SANDERO', 'LOGAN', 'KANGOO', 'ALASKAN', 'DUSTER'],
+      'CHEVROLET': ['ONIX', 'CRUZE', 'S10', 'TRACKER', 'JOY'],
+      'PEUGEOT': ['208', '2008', '308', 'PARTNER'],
+    };
+
+    final List<String> infraccionesSugeridas = [
+      'ESTACIONAMIENTO EN DOBLE FILA',
+      'ESTACIONAMIENTO SOBRE SENDA PEATONAL',
+      'ESTACIONAMIENTO EN OCHAVA',
+      'ESTACIONAMIENTO FRENTE A GARAJE',
+      'LUGAR PROHIBIDO',
+      'OBSTRUCCION DE RAMPA',
+      'SIN TICKET DE ESTACIONAMIENTO',
+    ];
+
+    List<String> modelos = (_marcaController.text.isNotEmpty && vehiculosSugeridos.containsKey(_marcaController.text))
+        ? vehiculosSugeridos[_marcaController.text]! : [];
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.localidadId, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: naranjaXsim)),
+            Text(widget.userName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.normal, color: naranjaXsim)),
+          ],
+        ),
+        actions: [
+          IconButton(onPressed: widget.onThemeToggle, icon: const Icon(Icons.brightness_4)),
+          IconButton(onPressed: _logout, icon: const Icon(Icons.logout))
+        ],
+      ),
+      body: Stack(
+        children: [
+          SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: Form(
+              key: _formKey,
+              child: Column(children: [
+                Row(children: [
+                  Expanded(child: _buildImageCard(
+                    'Foto Patente', 
+                    _imagenPatente, 
+                    () => _pickImage(true),
+                    () => setState(() {
+                      _imagenPatente = null;
+                      _patenteDetectadaExito = false;
+                    })
+                  )),
+                  const SizedBox(width: 10),
+                  Expanded(child: _buildImageCard(
+                    'Foto Entorno', 
+                    _imagenEntorno, 
+                    () => _pickImage(false),
+                    () => setState(() => _imagenEntorno = null)
+                  )),
+                ]),
+                
+                _buildSectionTitle('Vehículo'),
+                _buildField(
+                  _patenteController, 
+                  'Patente', 
+                  Icons.directions_car,
+                  suffixIcon: _patenteDetectadaExito 
+                      ? const Icon(Icons.check_circle, color: Colors.green) 
+                      : null,
+                ),
+                const SizedBox(height: 15),
+                Row(children: [
+                  Expanded(child: _buildAutocompleteField(controller: _marcaController, label: 'Marca', options: vehiculosSugeridos.keys.toList())),
+                  const SizedBox(width: 10),
+                  Expanded(child: _buildAutocompleteField(controller: _modeloController, label: 'Modelo', options: modelos)),
+                ]),
+
+                _buildSectionTitle('Ubicación'),
+                _buildField(
+                  _calleController, 
+                  'Calle / Ruta', 
+                  Icons.map,
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.my_location, color: naranjaXsim),
+                    onPressed: () => _obtenerUbicacion(actualizarDireccion: true),
+                  )
+                ),
+                const SizedBox(height: 15),
+                _buildField(_numeroController, 'Nro / Km', Icons.location_on, type: TextInputType.number),
+
+                _buildSectionTitle('Infracción'),
+                _buildAutocompleteField(controller: _tipoInfraccionController, label: 'Tipo de Infracción', options: infraccionesSugeridas, icon: Icons.warning),
+                const SizedBox(height: 15),
+                TextFormField(
+                  controller: _observacionesController,
+                  maxLines: 3,
+                  style: const TextStyle(fontWeight: FontWeight.w500),
+                  decoration: InputDecoration(
+                    labelText: 'Observaciones',
+                    labelStyle: TextStyle(
+                      color: isDark ? Colors.white60 : Colors.black54,
+                    ),
+                    filled: true,
+                    fillColor: isDark ? Colors.white10 : Colors.grey[100],
+                    prefixIcon: const Icon(Icons.edit_note),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: naranjaXsim, width: 1.5),
+                    ),
+                  ),
+                ),
+                
+                const SizedBox(height: 40), 
+                
+                ElevatedButton(
+                  onPressed: _subiendo ? null : _registrarInfraccion,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: naranjaXsim, 
+                    foregroundColor: Colors.white, 
+                    minimumSize: const Size(double.infinity, 60), 
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                    elevation: 5,
+                  ),
+                  child: _subiendo 
+                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) 
+                      : const Text('REGISTRAR INFRACCIÓN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                ),
+                const SizedBox(height: 40),
+              ]),
+            ),
+          ),
+          if (_estadoSubida.isNotEmpty)
+            Container(
+              color: Colors.black87, 
+              child: Center(child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(color: Colors.white),
+                  const SizedBox(height: 20),
+                  Text(_estadoSubida, style: const TextStyle(color: Colors.white, fontSize: 18, decoration: TextDecoration.none)),
+                ],
+              )),
+            ),
+        ],
+      ),
+    );
   }
 }
 
 class UpperCaseTextFormatter extends TextInputFormatter {
   @override
-  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
-    return TextEditingValue(text: newValue.text.toUpperCase(), selection: newValue.selection);
-  }
+  TextEditingValue formatEditUpdate(TextEditingValue old, TextEditingValue newVal) =>
+      TextEditingValue(text: newVal.text.toUpperCase(), selection: newVal.selection);
 }
