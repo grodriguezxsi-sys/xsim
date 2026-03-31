@@ -26,7 +26,8 @@ dependencies:
   image: ^4.1.3 # para el pre-procesamiento
   path_provider: ^2.1.2
   path: ^1.9.0
-
+  connectivity_plus: ^6.0.3 # Añadido para monitorear la conexión
+  provider: ^6.0.5 # Añadido para gestión de estado
 
 dev_dependencies:
   flutter_test:

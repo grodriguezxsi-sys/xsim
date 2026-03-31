@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:provider/provider.dart';
+import '../services/connectivity_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -15,6 +17,16 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscureText = true;
 
   Future<void> _login() async {
+    final connectivity = context.read<ConnectivityService>();
+    
+    if (!connectivity.hasInternet) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Se requiere conexión a internet para el ingreso inicial.'),
+        backgroundColor: Colors.orange,
+      ));
+      return;
+    }
+
     setState(() => _isLoading = true);
     try {
       await FirebaseAuth.instance.signInWithEmailAndPassword(
@@ -84,7 +96,7 @@ class _LoginScreenState extends State<LoginScreen> {
       ) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.1),
+        color: Colors.white.withOpacity(0.1),
         borderRadius: BorderRadius.circular(12),
       ),
       child: TextField(

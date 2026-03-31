@@ -1,10 +1,9 @@
 import 'dart:io';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image/image.dart' as img;
+import 'package:flutter/foundation.dart';
 
 class DeteccionVehiculoService {
-  // En la versión 0.15.1 de google_mlkit_text_recognition:
-  // Se usa el parámetro 'script' directamente. 'options' ya no existe.
   final TextRecognizer _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
   final Map<String, String> modeloAMarca = {
@@ -23,19 +22,8 @@ class DeteccionVehiculoService {
     String? marcaDetectada;
 
     try {
-      final bytes = await File(imagePath).readAsBytes();
-      img.Image? originalImage = img.decodeImage(bytes);
-
-      if (originalImage == null) return {};
-
-      img.Image processedImage = img.grayscale(originalImage);
-      processedImage = img.contrast(processedImage, contrast: 160.0);
-
-      final tempDir = Directory.systemTemp;
-      final processedFile = File('${tempDir.path}/temp_ocr_proc.png');
-      await processedFile.writeAsBytes(img.encodePng(processedImage));
-
-      final inputImage = InputImage.fromFilePath(processedFile.path);
+      // Usamos el archivo original directamente primero para evitar el pesado procesamiento de imagen que causa el crash
+      final inputImage = InputImage.fromFilePath(imagePath);
       final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
 
       final regexPatente = RegExp(r'([A-Z]{2}\d{3}[A-Z]{2})|([A-Z]{3}\d{3})');
@@ -59,9 +47,8 @@ class DeteccionVehiculoService {
           }
         }
       }
-      if (await processedFile.exists()) await processedFile.delete();
     } catch (e) {
-      print('Error en DeteccionService: $e');
+      debugPrint('Error en DeteccionService: $e');
     }
 
     return {

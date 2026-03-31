@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // Añadido para SystemNavigator
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:provider/provider.dart';
+import 'package:xsim/services/connectivity_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/infraccion_form.dart';
 import 'screens/historial_screen.dart';
@@ -13,7 +16,12 @@ void main() async {
   } catch (e) {
     debugPrint("Error inicializando Firebase: $e");
   }
-  runApp(const MyApp());
+  runApp(
+    ChangeNotifierProvider(
+      create: (context) => ConnectivityService(),
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -95,9 +103,8 @@ class MainNavigation extends StatefulWidget {
   State<MainNavigation> createState() => _MainNavigationState();
 }
 
-class _MainNavigationState extends State<MainNavigation> {
+class _MainNavigationState extends State<MainNavigation> with SingleTickerProviderStateMixin {
   final PageController _pageController = PageController();
-  int _currentIndex = 0;
   String? _localidadId;
   String? _userName;
 
@@ -105,6 +112,29 @@ class _MainNavigationState extends State<MainNavigation> {
   void initState() {
     super.initState();
     _fetchUserData();
+
+    // Escuchar cambios de conectividad y mostrar SnackBar
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<ConnectivityService>().connectionStatusController.stream.listen((status) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        if (status == ConnectivityStatus.offline) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Sin conexión. Modo offline activado.'), backgroundColor: Colors.orange)
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('¡Tenemos señal! Intentando subir fotos pendientes...'), backgroundColor: Colors.green)
+          );
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
   }
 
   Future<void> _fetchUserData() async {
@@ -123,35 +153,63 @@ class _MainNavigationState extends State<MainNavigation> {
     } catch (_) {}
   }
 
+  Future<bool> _handlePop() async {
+    final connectivityService = context.read<ConnectivityService>();
+    if (connectivityService.hasPendingUploads && connectivityService.hasInternet) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Atención'),
+          content: const Text('Hay infracciones pendientes de sincronizar. ¿Deseas subirlas ahora?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancelar')),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop(true);
+                connectivityService.retryPendingUploads();
+              },
+              child: const Text('Subir ahora'),
+            ),
+          ],
+        ),
+      );
+      return confirm ?? false;
+    }
+    return true; // Si no hay pendientes, permitimos salir
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_localidadId == null || _userName == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    return Scaffold(
-      body: PageView(
-        controller: _pageController,
-        physics: const NeverScrollableScrollPhysics(),
-        children: [
-          InfraccionForm(
-            localidadId: _localidadId!,
-            userName: _userName!,
-            onThemeToggle: widget.onThemeToggle,
-          ),
-          HistorialScreen(localidadId: _localidadId!),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentIndex,
-        onDestinationSelected: (index) {
-          setState(() => _currentIndex = index);
-          _pageController.jumpToPage(index);
-        },
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.edit_document), label: 'Formulario'),
-          NavigationDestination(icon: Icon(Icons.history), label: 'Historial'),
-        ],
+    return PopScope(
+      canPop: false, // Bloqueamos el pop automático
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        final shouldExit = await _handlePop();
+        if (shouldExit && context.mounted) {
+          // En lugar de Navigator.pop (que causa pantalla negra), cerramos la app
+          SystemNavigator.pop(); 
+        }
+      },
+      child: Scaffold(
+        body: PageView(
+          controller: _pageController,
+          children: [
+            InfraccionForm(
+              localidadId: _localidadId!,
+              userName: _userName!,
+              onThemeToggle: widget.onThemeToggle,
+            ),
+            HistorialScreen(
+              localidadId: _localidadId!,
+              userName: _userName!,
+              onThemeToggle: widget.onThemeToggle,
+            ),
+          ],
+        ),
       ),
     );
   }
