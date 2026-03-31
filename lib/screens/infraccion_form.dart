@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../services/connectivity_service.dart';
+import '../services/deteccion_service.dart';
 
 class InfraccionForm extends StatefulWidget {
   final String localidadId;
@@ -23,26 +24,30 @@ class InfraccionForm extends StatefulWidget {
   State<InfraccionForm> createState() => _InfraccionFormState();
 }
 
-class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProviderStateMixin {
+class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProviderStateMixin, AutomaticKeepAliveClientMixin {
   final _formKey = GlobalKey<FormState>();
   static const Color naranjaXsim = Color(0xFFFF8C00);
 
-  final _patenteController = TextEditingController();
-  final _marcaController = TextEditingController();
-  final _modeloController = TextEditingController();
-  final _calleController = TextEditingController();
-  final _numeroController = TextEditingController();
-  final _tipoInfraccionController = TextEditingController();
-  final _observacionesController = TextEditingController();
-
-  XFile? _imagenPatente;
-  XFile? _imagenEntorno;
-  String _ubicacionGps = "No obtenida";
   bool _subiendo = false;
   String _estadoSubida = "";
   final ImagePicker _picker = ImagePicker();
+  final DeteccionVehiculoService _deteccionService = DeteccionVehiculoService();
   
   late final AnimationController _animationController;
+
+  final List<String> _infraccionesSugeridas = [
+    'OBSTRUCCIÓN DE RAMPA',
+    'SENDA PEATONAL',
+    'DOBLE FILA',
+    'ENTRADA DE GARAJE',
+    'PARADAS DE COLECTIVO Y TAXIS',
+    'OCHAVA',
+    'LUGAR RESERVADO (SERVICIOS DE EMERGENCIA)',
+    'ESTACIONAMIENTO INDEBIDO',
+  ];
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -56,19 +61,14 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
   @override
   void dispose() {
     _animationController.dispose();
-    _patenteController.dispose();
-    _marcaController.dispose();
-    _modeloController.dispose();
-    _calleController.dispose();
-    _numeroController.dispose();
-    _tipoInfraccionController.dispose();
-    _observacionesController.dispose();
+    _deteccionService.dispose();
     super.dispose();
   }
 
   Future<void> _logout() async => await FirebaseAuth.instance.signOut();
 
   Future<void> _obtenerUbicacion({bool actualizarDireccion = true}) async {
+    final state = context.read<ConnectivityService>();
     try {
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
@@ -77,15 +77,15 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
       }
       Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
       if (!mounted) return;
-      setState(() => _ubicacionGps = "${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}");
+      setState(() => state.ubicacionGps = "${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}");
 
       if (actualizarDireccion) {
         List<Placemark> placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
         if (placemarks.isNotEmpty) {
           Placemark place = placemarks[0];
           setState(() {
-            _calleController.text = place.thoroughfare ?? "";
-            _numeroController.text = place.subThoroughfare ?? "";
+            state.calleController.text = place.thoroughfare ?? "";
+            state.numeroController.text = place.subThoroughfare ?? "";
           });
         }
       }
@@ -93,15 +93,47 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
   }
 
   Future<void> _pickImage(bool isPatente) async {
+    final state = context.read<ConnectivityService>();
     final XFile? image = await _picker.pickImage(source: ImageSource.camera, imageQuality: 70);
     if (image != null) {
-      setState(() => isPatente ? _imagenPatente = image : _imagenEntorno = image);
+      setState(() => isPatente ? state.imagenPatente = image : state.imagenEntorno = image);
       _obtenerUbicacion(actualizarDireccion: isPatente);
+      
+      if (isPatente) {
+        _ejecutarDeteccionOCR(image.path);
+      }
+    }
+  }
+
+  Future<void> _ejecutarDeteccionOCR(String path) async {
+    final state = context.read<ConnectivityService>();
+    setState(() => _estadoSubida = "Analizando patente...");
+    
+    try {
+      final resultados = await _deteccionService.procesarYDeteccionDual(path);
+      if (!mounted) return;
+      
+      setState(() {
+        if (resultados['patente'] != null) {
+          state.patenteController.text = resultados['patente']!;
+        }
+        if (resultados['marca'] != null) {
+          state.marcaController.text = resultados['marca']!;
+        }
+        if (resultados['modelo'] != null) {
+          state.modeloController.text = resultados['modelo']!;
+        }
+      });
+    } catch (e) {
+      debugPrint("Error en OCR: $e");
+    } finally {
+      if (mounted) setState(() => _estadoSubida = "");
     }
   }
 
   Future<void> _registrarInfraccion() async {
-    if (!_formKey.currentState!.validate() || _imagenPatente == null || _imagenEntorno == null) {
+    final state = context.read<ConnectivityService>();
+    if (!_formKey.currentState!.validate() || state.imagenPatente == null || state.imagenEntorno == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Faltan fotos o datos')));
       return;
     }
@@ -113,7 +145,7 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
       final idInfraccion = FirebaseFirestore.instance.collection('infracciones').doc().id;
       final dayFolder = DateFormat('dd-MM-yyyy').format(now);
       final timestamp = DateFormat('ddMMyyyyHHmmss').format(now);
-      final patente = _patenteController.text.toUpperCase().replaceAll(' ', '');
+      final patente = state.patenteController.text.toUpperCase().replaceAll(' ', '');
 
       final String nameP = "${timestamp}_${idInfraccion}_foto_patente_$patente.jpg";
       final String nameE = "${timestamp}_${idInfraccion}_foto_entorno_$patente.jpg";
@@ -123,18 +155,18 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
       final localPath = Directory('${directory.path}/evidencia/$idInfraccion');
       if (!await localPath.exists()) await localPath.create(recursive: true);
 
-      final File fileP = await File(_imagenPatente!.path).copy('${localPath.path}/$nameP');
-      final File fileE = await File(_imagenEntorno!.path).copy('${localPath.path}/$nameE');
+      final File fileP = await File(state.imagenPatente!.path).copy('${localPath.path}/$nameP');
+      final File fileE = await File(state.imagenEntorno!.path).copy('${localPath.path}/$nameE');
 
       final Map<String, dynamic> datosJson = {
         'id': idInfraccion,
         'localidad_id': widget.localidadId,
         'patente': patente,
-        'marca': _marcaController.text.toUpperCase(),
-        'modelo': _modeloController.text.toUpperCase(),
-        'ubicacion': {'calle': _calleController.text.toUpperCase(), 'nro': _numeroController.text.toUpperCase(), 'gps': _ubicacionGps},
-        'infraccion': _tipoInfraccionController.text.toUpperCase(),
-        'observaciones': _observacionesController.text.toUpperCase(),
+        'marca': state.marcaController.text.toUpperCase(),
+        'modelo': state.modeloController.text.toUpperCase(),
+        'ubicacion': {'calle': state.calleController.text.toUpperCase(), 'nro': state.numeroController.text.toUpperCase(), 'gps': state.ubicacionGps},
+        'infraccion': state.tipoInfraccionController.text.toUpperCase(),
+        'observaciones': state.observacionesController.text.toUpperCase(),
         'fecha_hora': now.toIso8601String(),
         'registrado_por': widget.userName,
       };
@@ -155,15 +187,16 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
         'fecha_carpeta': dayFolder,
       });
 
-      context.read<ConnectivityService>().notifyListeners();
+      state.notifyListeners();
 
       if (!mounted) return;
-      _limpiarFormulario();
+      
+      state.clearForm();
       setState(() { _subiendo = false; _estadoSubida = ""; });
       
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Acta guardada correctamente. Se sincronizará automáticamente.'), 
-        backgroundColor: Colors.blue,
+        backgroundColor: Colors.green, // CAMBIADO A VERDE
         duration: Duration(seconds: 3),
       ));
       
@@ -173,17 +206,6 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error al registrar: $e')));
       }
     }
-  }
-
-  void _limpiarFormulario() {
-    _patenteController.clear();
-    _marcaController.clear();
-    _modeloController.clear();
-    _calleController.clear();
-    _numeroController.clear();
-    _tipoInfraccionController.clear();
-    _observacionesController.clear();
-    setState(() { _imagenPatente = null; _imagenEntorno = null; _ubicacionGps = "No obtenida"; });
   }
 
   // --- UI WIDGETS ---
@@ -215,7 +237,7 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
         prefixIcon: Icon(icon, color: naranjaXsim),
         suffixIcon: suffix,
         filled: true,
-        fillColor: isDark ? Colors.white.withOpacity(0.05) : Colors.grey[200],
+        fillColor: isDark ? Colors.white.withOpacity(0.05) : Colors.grey[100],
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(15), 
           borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.grey[400]!)
@@ -250,7 +272,7 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
             labelStyle: TextStyle(color: isDark ? Colors.white70 : Colors.black54),
             prefixIcon: Icon(icon, color: naranjaXsim),
             filled: true,
-            fillColor: isDark ? Colors.white.withOpacity(0.05) : Colors.grey[200],
+            fillColor: isDark ? Colors.white.withOpacity(0.05) : Colors.grey[100],
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(15), 
               borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.grey[400]!)
@@ -273,7 +295,10 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final state = context.watch<ConnectivityService>();
+
     return Scaffold(
       appBar: AppBar(
         title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -309,26 +334,26 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
           padding: const EdgeInsets.all(20),
           child: Form(key: _formKey, child: Column(children: [
             Row(children: [
-              Expanded(child: _buildImageCard('Patente', _imagenPatente, () => _pickImage(true))),
+              Expanded(child: _buildImageCard('Patente', state.imagenPatente, () => _pickImage(true))),
               const SizedBox(width: 10),
-              Expanded(child: _buildImageCard('Entorno', _imagenEntorno, () => _pickImage(false))),
+              Expanded(child: _buildImageButton('Entorno', state.imagenEntorno, () => _pickImage(false))),
             ]),
             _buildSectionTitle('Vehículo'),
-            _buildField(_patenteController, 'Patente', Icons.directions_car),
+            _buildField(state.patenteController, 'Patente', Icons.directions_car),
             const SizedBox(height: 15),
             Row(children: [
-              Expanded(child: _buildAutocomplete(_marcaController, 'Marca', ['TOYOTA', 'FORD', 'FIAT', 'VOLKSWAGEN', 'CHEVROLET', 'RENAULT', 'PEUGEOT'], Icons.factory)),
+              Expanded(child: _buildAutocomplete(state.marcaController, 'Marca', ['TOYOTA', 'FORD', 'FIAT', 'VOLKSWAGEN', 'CHEVROLET', 'RENAULT', 'PEUGEOT'], Icons.factory)),
               const SizedBox(width: 10),
-              Expanded(child: _buildField(_modeloController, 'Modelo', Icons.category)),
+              Expanded(child: _buildField(state.modeloController, 'Modelo', Icons.category)),
             ]),
             _buildSectionTitle('Ubicación'),
-            _buildField(_calleController, 'Calle / Ruta', Icons.map, suffix: IconButton(icon: const Icon(Icons.my_location, color: naranjaXsim), onPressed: () => _obtenerUbicacion())),
+            _buildField(state.calleController, 'Calle / Ruta', Icons.map, suffix: IconButton(icon: const Icon(Icons.my_location, color: naranjaXsim), onPressed: () => _obtenerUbicacion())),
             const SizedBox(height: 15),
-            _buildField(_numeroController, 'Nro / Km', Icons.location_on, type: TextInputType.number),
+            _buildField(state.numeroController, 'Nro / Km', Icons.location_on, type: TextInputType.number),
             _buildSectionTitle('Infracción'),
-            _buildAutocomplete(_tipoInfraccionController, 'Infracción', ['DOBLE FILA', 'OCHAVA', 'GARAJE', 'SENDA PEATONAL', 'VEREDA', 'LUGAR PROHIBIDO'], Icons.warning),
+            _buildAutocomplete(state.tipoInfraccionController, 'Infracción', _infraccionesSugeridas, Icons.warning),
             const SizedBox(height: 15),
-            _buildField(_observacionesController, 'Observaciones', Icons.edit_note),
+            _buildField(state.observacionesController, 'Observaciones', Icons.edit_note),
             const SizedBox(height: 30),
             ElevatedButton(
               onPressed: _subiendo ? null : _registrarInfraccion,

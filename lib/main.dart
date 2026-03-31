@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // Añadido para SystemNavigator
+import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
 import 'package:xsim/services/connectivity_service.dart';
 import 'screens/login_screen.dart';
@@ -69,25 +68,28 @@ class _ThemeManagerState extends State<ThemeManager> {
         appBarTheme: const AppBarTheme(backgroundColor: azulMarinoXsim),
       ),
       themeMode: _themeMode,
-      home: AuthWrapper(onThemeToggle: _toggleTheme),
+      home: const AuthWrapper(),
     );
   }
 }
 
 class AuthWrapper extends StatelessWidget {
-  final VoidCallback onThemeToggle;
-  const AuthWrapper({super.key, required this.onThemeToggle});
+  const AuthWrapper({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final auth = FirebaseAuth.instance;
+    final state = context.read<ConnectivityService>();
+
     return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
+      stream: auth.authStateChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
-        if (snapshot.hasData) {
-          return MainNavigation(onThemeToggle: onThemeToggle);
+        if (snapshot.hasData && snapshot.data != null) {
+          state.loadUserData(snapshot.data!.uid);
+          return MainNavigation(onThemeToggle: () {}); 
         }
         return const LoginScreen();
       },
@@ -105,26 +107,21 @@ class MainNavigation extends StatefulWidget {
 
 class _MainNavigationState extends State<MainNavigation> with SingleTickerProviderStateMixin {
   final PageController _pageController = PageController();
-  String? _localidadId;
-  String? _userName;
 
   @override
   void initState() {
     super.initState();
-    _fetchUserData();
-
-    // Escuchar cambios de conectividad y mostrar SnackBar
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<ConnectivityService>().connectionStatusController.stream.listen((status) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         if (status == ConnectivityStatus.offline) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Sin conexión. Modo offline activado.'), backgroundColor: Colors.orange)
+            const SnackBar(content: Text('Modo offline activado.'), backgroundColor: Colors.orange)
           );
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('¡Tenemos señal! Intentando subir fotos pendientes...'), backgroundColor: Colors.green)
+            const SnackBar(content: Text('Conexión recuperada.'), backgroundColor: Colors.green)
           );
         }
       });
@@ -137,80 +134,69 @@ class _MainNavigationState extends State<MainNavigation> with SingleTickerProvid
     super.dispose();
   }
 
-  Future<void> _fetchUserData() async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user != null) {
-        final doc = await FirebaseFirestore.instance.collection('usuarios').doc(user.uid).get();
-        if (doc.exists) {
-          if (!mounted) return;
-          setState(() {
-            _localidadId = doc.data()?['localidad_id'] ?? "S/L";
-            _userName = doc.data()?['nombre'] ?? "Inspector";
-          });
-        }
-      }
-    } catch (_) {}
-  }
-
   Future<bool> _handlePop() async {
     final connectivityService = context.read<ConnectivityService>();
+    
+    // Si hay pendientes, preguntamos si subir
     if (connectivityService.hasPendingUploads && connectivityService.hasInternet) {
       final confirm = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Atención'),
-          content: const Text('Hay infracciones pendientes de sincronizar. ¿Deseas subirlas ahora?'),
+          title: const Text('Infracciones Pendientes'),
+          content: const Text('¿Deseas subirlas antes de salir?'),
           actions: [
-            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancelar')),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(context).pop(true);
-                connectivityService.retryPendingUploads();
-              },
-              child: const Text('Subir ahora'),
-            ),
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('NO')),
+            ElevatedButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('SI')),
           ],
         ),
       );
-      return confirm ?? false;
+      if (confirm == true) {
+        await connectivityService.retryPendingUploads();
+      }
     }
-    return true; // Si no hay pendientes, permitimos salir
+
+    // SIEMPRE LIMPIAMOS EL FORMULARIO AL SALIR DE LA APP
+    connectivityService.clearForm();
+    return true;
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_localidadId == null || _userName == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+    final onThemeToggle = context.findAncestorStateOfType<_ThemeManagerState>()?._toggleTheme ?? () {};
 
-    return PopScope(
-      canPop: false, // Bloqueamos el pop automático
-      onPopInvokedWithResult: (didPop, result) async {
-        if (didPop) return;
-        final shouldExit = await _handlePop();
-        if (shouldExit && context.mounted) {
-          // En lugar de Navigator.pop (que causa pantalla negra), cerramos la app
-          SystemNavigator.pop(); 
+    return Consumer<ConnectivityService>(
+      builder: (context, appState, child) {
+        if (!appState.userDataLoaded) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
-      },
-      child: Scaffold(
-        body: PageView(
-          controller: _pageController,
-          children: [
-            InfraccionForm(
-              localidadId: _localidadId!,
-              userName: _userName!,
-              onThemeToggle: widget.onThemeToggle,
+
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, result) async {
+            if (didPop) return;
+            if (await _handlePop() && context.mounted) {
+              SystemNavigator.pop();
+            }
+          },
+          child: Scaffold(
+            body: PageView(
+              controller: _pageController,
+              children: [
+                InfraccionForm(
+                  localidadId: appState.localidadId!,
+                  userName: appState.userName!,
+                  onThemeToggle: onThemeToggle,
+                ),
+                HistorialScreen(
+                  localidadId: appState.localidadId!,
+                  userName: appState.userName!,
+                  onThemeToggle: onThemeToggle,
+                ),
+              ],
             ),
-            HistorialScreen(
-              localidadId: _localidadId!,
-              userName: _userName!,
-              onThemeToggle: widget.onThemeToggle,
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      }
     );
   }
 }

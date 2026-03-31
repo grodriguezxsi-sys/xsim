@@ -4,6 +4,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'dart:io';
+import 'package:image_picker/image_picker.dart';
 
 enum ConnectivityStatus { online, offline }
 
@@ -11,13 +12,44 @@ class ConnectivityService with ChangeNotifier {
   final StreamController<ConnectivityStatus> connectionStatusController = StreamController<ConnectivityStatus>.broadcast();
   bool _hasInternet = false;
   bool _hasPendingUploads = false;
+  
+  String? userName;
+  String? localidadId;
+  bool userDataLoaded = false;
+
+  // --- PERSISTENCIA DEL FORMULARIO ---
+  final patenteController = TextEditingController();
+  final marcaController = TextEditingController();
+  final modeloController = TextEditingController();
+  final calleController = TextEditingController();
+  final numeroController = TextEditingController();
+  final tipoInfraccionController = TextEditingController();
+  final observacionesController = TextEditingController();
+  XFile? imagenPatente;
+  XFile? imagenEntorno;
+  String ubicacionGps = "No obtenida";
+
+  void clearForm() {
+    patenteController.clear();
+    marcaController.clear();
+    modeloController.clear();
+    calleController.clear();
+    numeroController.clear();
+    tipoInfraccionController.clear();
+    observacionesController.clear();
+    imagenPatente = null;
+    imagenEntorno = null;
+    ubicacionGps = "No obtenida";
+    notifyListeners();
+  }
+
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   StreamSubscription<QuerySnapshot>? _pendingUploadsSubscription;
 
   static final ConnectivityService _instance = ConnectivityService._internal();
   factory ConnectivityService() => _instance;
   ConnectivityService._internal() {
-    _checkInitialConnectivity(); // Chequeo inmediato al arrancar
+    _checkInitialConnectivity();
     _initConnectivityListener();
     _initPendingUploadsListener();
   }
@@ -59,9 +91,32 @@ class ConnectivityService with ChangeNotifier {
         });
   }
 
+  Future<void> loadUserData(String uid) async {
+    if (userDataLoaded) return;
+    try {
+      final doc = await FirebaseFirestore.instance.collection('usuarios').doc(uid).get();
+      if (doc.exists) {
+        localidadId = doc.data()?['localidad_id'] ?? "S/L";
+        userName = doc.data()?['nombre'] ?? "Inspector";
+        userDataLoaded = true;
+        clearForm(); // LIMPIEZA AL INICIAR SESIÓN O APLICACIÓN
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint("Error cargando perfil: $e");
+    }
+  }
+
+  void clearUserData() {
+    userName = null;
+    localidadId = null;
+    userDataLoaded = false;
+    clearForm(); 
+    notifyListeners();
+  }
+
   Future<void> retryPendingUploads() async {
     if (!_hasInternet) return;
-
     try {
       final pendingDocs = await FirebaseFirestore.instance
           .collection('infracciones')
@@ -71,7 +126,6 @@ class ConnectivityService with ChangeNotifier {
       for (var doc in pendingDocs.docs) {
         final data = doc.data();
         final id = doc.id;
-        
         final localidad = data['localidad_id'] ?? data['localidad'];
         final fechaCarpeta = data['fecha_carpeta'];
         final nP = data['nombre_archivo_patente'];
@@ -94,7 +148,6 @@ class ConnectivityService with ChangeNotifier {
           }
 
           final storagePath = "infracciones/$localidad/$fechaCarpeta";
-          
           final refP = FirebaseStorage.instance.ref().child("$storagePath/$nP");
           await refP.putFile(fileP);
           final urlP = await refP.getDownloadURL();
@@ -114,7 +167,7 @@ class ConnectivityService with ChangeNotifier {
             'dato_url': urlD,
           });
         } catch (e) {
-          debugPrint("Error reintentando subida para $id: $e");
+          debugPrint("Error reintento $id: $e");
         }
       }
     } catch (e) {
