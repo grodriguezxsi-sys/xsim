@@ -36,7 +36,6 @@ class ConnectivityService with ChangeNotifier {
 
   ConnectivityService() {
     _initConnectivityListener();
-    // No iniciamos Firestore aquí para no bloquear el login
   }
 
   void _initConnectivityListener() {
@@ -44,42 +43,56 @@ class ConnectivityService with ChangeNotifier {
       _hasInternet = results.isNotEmpty && !results.contains(ConnectivityResult.none);
       connectionStatusController.add(_hasInternet ? ConnectivityStatus.online : ConnectivityStatus.offline);
       notifyListeners();
+      if (_hasInternet && _hasPendingUploads) {
+        retryPendingUploads();
+      }
     });
+  }
+
+  void startPendingUploadsListener() {
+    if (localidadId == null) {
+      debugPrint("startPendingUploadsListener: localidadId es null, cancelando.");
+      return;
+    }
+    
+    debugPrint("Iniciando listener de pendientes para localidad: $localidadId");
+    _pendingUploadsSubscription?.cancel();
+    _pendingUploadsSubscription = FirebaseFirestore.instance
+        .collection('infracciones')
+        .where('localidad_id', isEqualTo: localidadId)
+        .where('fotos_subidas', isEqualTo: false)
+        .snapshots()
+        .listen((snapshot) {
+          _hasPendingUploads = snapshot.docs.isNotEmpty;
+          debugPrint("Pendientes detectadas: ${snapshot.docs.length}");
+          notifyListeners();
+          if (_hasInternet && _hasPendingUploads) {
+            retryPendingUploads();
+          }
+        }, onError: (error) {
+          debugPrint("Error en listener de pendientes: $error");
+        });
   }
 
   Future<void> loadUserData(String uid) async {
     try {
       final doc = await FirebaseFirestore.instance.collection('usuarios').doc(uid).get();
       if (doc.exists) {
-        localidadId = doc.data()?['localidad_id'];
-        userName = doc.data()?['nombre'];
+        final data = doc.data();
+        localidadId = data?['localidad_id'];
+        userName = data?['nombre'];
+        debugPrint("Usuario cargado: $userName de $localidadId");
+        startPendingUploadsListener(); 
+      } else {
+        debugPrint("El documento de usuario no existe en Firestore.");
       }
-      
-      // Iniciamos los listeners de subidas solo después de tener éxito con Firestore
-      _initPendingUploadsListener();
-      
       userDataLoaded = true;
       notifyListeners();
     } catch (e) {
-      debugPrint("Error Firestore: $e");
+      debugPrint("Error Firestore loadUserData: $e");
       userDataLoaded = true;
       notifyListeners();
     }
-  }
-
-  void _initPendingUploadsListener() {
-    _pendingUploadsSubscription?.cancel();
-    _pendingUploadsSubscription = FirebaseFirestore.instance
-        .collection('infracciones')
-        .where('fotos_subidas', isEqualTo: false)
-        .snapshots()
-        .listen((snapshot) {
-          _hasPendingUploads = snapshot.docs.isNotEmpty;
-          notifyListeners();
-          if (_hasInternet && _hasPendingUploads) {
-            retryPendingUploads();
-          }
-        });
   }
 
   void reset() {
@@ -105,32 +118,90 @@ class ConnectivityService with ChangeNotifier {
   }
 
   Future<void> retryPendingUploads() async {
-    if (!_hasInternet) return;
+    if (!_hasInternet || localidadId == null) return;
+    debugPrint("Intentando subir infracciones pendientes...");
     try {
       final pendingDocs = await FirebaseFirestore.instance
           .collection('infracciones')
+          .where('localidad_id', isEqualTo: localidadId)
           .where('fotos_subidas', isEqualTo: false)
           .get();
 
       for (var doc in pendingDocs.docs) {
         final data = doc.data();
         final id = doc.id;
-        final storagePath = "infracciones/${data['localidad_id']}/${data['fecha_carpeta']}";
+        
+        final locId = data['localidad_id'] ?? "S_L";
+        final fechaCarpeta = data['fecha_carpeta'] ?? "S_F";
+        final storagePath = "infracciones/$locId/$fechaCarpeta";
+        
+        debugPrint("Subiendo acta ID: $id");
         
         try {
+          String? urlP, urlE, urlD;
+          bool todasSubidas = true;
+
+          // 1. Subir Patente (Obligatoria)
           if (data['ruta_local_patente'] != null) {
-            await FirebaseStorage.instance.ref().child("$storagePath/${data['nombre_archivo_patente']}").putFile(File(data['ruta_local_patente']));
+            final fileP = File(data['ruta_local_patente']);
+            if (await fileP.exists()) {
+              final refP = FirebaseStorage.instance.ref().child("$storagePath/${data['nombre_archivo_patente']}");
+              await refP.putFile(fileP);
+              urlP = await refP.getDownloadURL();
+            } else {
+              debugPrint("Archivo de patente no encontrado localmente para acta $id");
+              todasSubidas = false;
+            }
+          } else {
+             todasSubidas = false;
           }
-          if (data['ruta_local_entorno'] != null) {
-            await FirebaseStorage.instance.ref().child("$storagePath/${data['nombre_archivo_entorno']}").putFile(File(data['ruta_local_entorno']));
+
+          // 2. Subir Entorno (Obligatoria)
+          if (data['ruta_local_entorno'] != null && todasSubidas) {
+            final fileE = File(data['ruta_local_entorno']);
+            if (await fileE.exists()) {
+              final refE = FirebaseStorage.instance.ref().child("$storagePath/${data['nombre_archivo_entorno']}");
+              await refE.putFile(fileE);
+              urlE = await refE.getDownloadURL();
+            } else {
+              debugPrint("Archivo de entorno no encontrado localmente para acta $id");
+              todasSubidas = false;
+            }
+          } else {
+             todasSubidas = false;
           }
-          if (data['ruta_local_dato'] != null) {
-            await FirebaseStorage.instance.ref().child("$storagePath/${data['nombre_archivo_dato']}").putFile(File(data['ruta_local_dato']), SettableMetadata(contentType: 'text/plain'));
+
+          // 3. Subir Dato (Opcional/Texto)
+          if (data['ruta_local_dato'] != null && todasSubidas) {
+            final fileD = File(data['ruta_local_dato']);
+            if (await fileD.exists()) {
+              final refD = FirebaseStorage.instance.ref().child("$storagePath/${data['nombre_archivo_dato']}");
+              await refD.putFile(fileD, SettableMetadata(contentType: 'text/plain'));
+              urlD = await refD.getDownloadURL();
+            }
           }
-          await FirebaseFirestore.instance.collection('infracciones').doc(id).update({'fotos_subidas': true});
-        } catch (e) { debugPrint("Error upload: $e"); }
+
+          // 4. SOLO actualizar Firestore si las fotos se subieron bien
+          if (todasSubidas && urlP != null && urlE != null) {
+            await FirebaseFirestore.instance.collection('infracciones').doc(id).update({
+              'fotos_subidas': true,
+              'foto_patente_url': urlP,
+              'foto_entorno_url': urlE,
+              'dato_url': urlD,
+            });
+            debugPrint("Acta $id subida y actualizada con éxito en Firestore.");
+          } else {
+            debugPrint("No se actualizará Firestore para el acta $id porque faltan archivos o falló la subida.");
+          }
+
+        } catch (e) { 
+          debugPrint("Error subiendo archivos de acta $id a Storage: $e"); 
+          // Si falla el putFile de Storage, salta al catch y NO actualiza Firestore
+        }
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint("Error en retryPendingUploads obteniendo documentos de Firestore: $e");
+    }
   }
 
   @override
