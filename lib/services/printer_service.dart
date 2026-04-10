@@ -1,5 +1,6 @@
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
+import 'package:flutter/foundation.dart'; // Added for debugPrint
 
 class PrinterService {
   // Genera los bytes del ticket con el formato de CECAITRA
@@ -40,7 +41,7 @@ class PrinterService {
         }
       }
     } catch (e) {
-      print("Error en printer service: $e");
+      debugPrint("Error en printer service: $e");
       rethrow;
     }
   }

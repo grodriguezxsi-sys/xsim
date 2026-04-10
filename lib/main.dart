@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
 import 'package:xsim/services/connectivity_service.dart';
+import 'firebase_options.dart';
 import 'screens/login_screen.dart';
 import 'screens/infraccion_form.dart';
 import 'screens/historial_screen.dart';
@@ -11,13 +11,15 @@ import 'screens/historial_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
-    await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
   } catch (e) {
     debugPrint("Error inicializando Firebase: $e");
   }
   runApp(
     ChangeNotifierProvider(
-      create: (context) => ConnectivityService(),
+      create: (_) => ConnectivityService(),
       child: const MyApp(),
     ),
   );
@@ -40,7 +42,16 @@ class ThemeManager extends StatefulWidget {
 }
 
 class _ThemeManagerState extends State<ThemeManager> {
-  static const Color azulMarinoXsim = Color(0xFF00162A);
+  // Paleta Dark
+  static const Color fondoPrincipalDark = Color(0xFF1A1F2E);
+  static const Color fondoAppBarDark = Color(0xFF141824);
+  
+  // Paleta Light (Mockup)
+  static const Color fondoPrincipalLight = Color(0xFFF0F2F5);
+  static const Color fondoAppBarLight = Colors.white;
+  
+  static const Color naranjaAcento = Color(0xFFE8952A);
+
   ThemeMode _themeMode = ThemeMode.dark;
 
   void _toggleTheme() {
@@ -57,39 +68,47 @@ class _ThemeManagerState extends State<ThemeManager> {
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.light,
-        colorSchemeSeed: azulMarinoXsim,
-        scaffoldBackgroundColor: Colors.white,
+        colorSchemeSeed: naranjaAcento,
+        scaffoldBackgroundColor: fondoPrincipalLight,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: fondoAppBarLight,
+          foregroundColor: Color(0xFF1A1F2E),
+          elevation: 0.5,
+          centerTitle: false,
+        ),
       ),
       darkTheme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
-        colorSchemeSeed: azulMarinoXsim,
-        scaffoldBackgroundColor: azulMarinoXsim,
-        appBarTheme: const AppBarTheme(backgroundColor: azulMarinoXsim),
+        colorSchemeSeed: naranjaAcento,
+        scaffoldBackgroundColor: fondoPrincipalDark,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: fondoAppBarDark,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          centerTitle: false,
+        ),
       ),
       themeMode: _themeMode,
-      home: const AuthWrapper(),
+      home: AuthWrapper(onThemeToggle: _toggleTheme),
     );
   }
 }
 
 class AuthWrapper extends StatelessWidget {
-  const AuthWrapper({super.key});
+  final VoidCallback onThemeToggle;
+  const AuthWrapper({super.key, required this.onThemeToggle});
 
   @override
   Widget build(BuildContext context) {
-    final auth = FirebaseAuth.instance;
-    final state = context.read<ConnectivityService>();
-
     return StreamBuilder<User?>(
-      stream: auth.authStateChanges(),
+      stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
         if (snapshot.hasData && snapshot.data != null) {
-          state.loadUserData(snapshot.data!.uid);
-          return MainNavigation(onThemeToggle: () {}); 
+          return MainNavigation(uid: snapshot.data!.uid, onThemeToggle: onThemeToggle);
         }
         return const LoginScreen();
       },
@@ -98,105 +117,47 @@ class AuthWrapper extends StatelessWidget {
 }
 
 class MainNavigation extends StatefulWidget {
+  final String uid;
   final VoidCallback onThemeToggle;
-  const MainNavigation({super.key, required this.onThemeToggle});
+  const MainNavigation({super.key, required this.uid, required this.onThemeToggle});
 
   @override
   State<MainNavigation> createState() => _MainNavigationState();
 }
 
-class _MainNavigationState extends State<MainNavigation> with SingleTickerProviderStateMixin {
-  final PageController _pageController = PageController();
-
+class _MainNavigationState extends State<MainNavigation> {
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<ConnectivityService>().connectionStatusController.stream.listen((status) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        if (status == ConnectivityStatus.offline) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Modo offline activado.'), backgroundColor: Colors.orange)
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Conexión recuperada.'), backgroundColor: Colors.green)
-          );
-        }
-      });
+      context.read<ConnectivityService>().loadUserData(widget.uid);
     });
   }
 
   @override
-  void dispose() {
-    _pageController.dispose();
-    super.dispose();
-  }
-
-  Future<bool> _handlePop() async {
-    final connectivityService = context.read<ConnectivityService>();
-    
-    // Si hay pendientes, preguntamos si subir
-    if (connectivityService.hasPendingUploads && connectivityService.hasInternet) {
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Infracciones Pendientes'),
-          content: const Text('¿Deseas subirlas antes de salir?'),
-          actions: [
-            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('NO')),
-            ElevatedButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('SI')),
-          ],
-        ),
-      );
-      if (confirm == true) {
-        await connectivityService.retryPendingUploads();
-      }
-    }
-
-    // SIEMPRE LIMPIAMOS EL FORMULARIO AL SALIR DE LA APP
-    connectivityService.clearForm();
-    return true;
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final onThemeToggle = context.findAncestorStateOfType<_ThemeManagerState>()?._toggleTheme ?? () {};
-
     return Consumer<ConnectivityService>(
-      builder: (context, appState, child) {
-        if (!appState.userDataLoaded) {
+      builder: (context, state, _) {
+        if (!state.userDataLoaded) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
-
-        return PopScope(
-          canPop: false,
-          onPopInvokedWithResult: (didPop, result) async {
-            if (didPop) return;
-            if (await _handlePop() && context.mounted) {
-              SystemNavigator.pop();
-            }
-          },
-          child: Scaffold(
-            body: PageView(
-              controller: _pageController,
-              children: [
-                InfraccionForm(
-                  localidadId: appState.localidadId!,
-                  userName: appState.userName!,
-                  onThemeToggle: onThemeToggle,
-                ),
-                HistorialScreen(
-                  localidadId: appState.localidadId!,
-                  userName: appState.userName!,
-                  onThemeToggle: onThemeToggle,
-                ),
-              ],
-            ),
+        return Scaffold(
+          body: PageView(
+            children: [
+              InfraccionForm(
+                localidadId: state.localidadId ?? "S/L",
+                userName: state.userName ?? "Inspector",
+                onThemeToggle: widget.onThemeToggle,
+              ),
+              HistorialScreen(
+                localidadId: state.localidadId ?? "S/L",
+                userName: state.userName ?? "Inspector",
+                onThemeToggle: widget.onThemeToggle,
+              ),
+            ],
           ),
         );
-      }
+      },
     );
   }
 }
