@@ -38,17 +38,6 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
   
   late final AnimationController _animationController;
 
-  final List<String> _infraccionesSugeridas = [
-    'OBSTRUCCIÓN DE RAMPA',
-    'SENDA PEATONAL',
-    'DOBLE FILA',
-    'ENTRADA DE GARAJE',
-    'PARADAS DE COLECTIVO Y TAXIS',
-    'OCHAVA',
-    'LUGAR RESERVADO (SERVICIOS DE EMERGENCIA)',
-    'ESTACIONAMIENTO INDEBIDO',
-  ];
-
   @override
   bool get wantKeepAlive => true;
 
@@ -152,15 +141,14 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
   }
 
   // AHORA ESTA FUNCIÓN SE LLAMA DESDE LA PANTALLA DE CONFIRMACIÓN
-  Future<void> _finalizarYRegistrar() async {
+  Future<void> _finalizarYRegistrar(Map<String, dynamic> datosCompletos) async {
     final state = context.read<ConnectivityService>();
     setState(() { _subiendo = true; _estadoSubida = "Asegurando registro local..."; });
 
     try {
-      final now = DateTime.now();
       final idInfraccion = FirebaseFirestore.instance.collection('infracciones').doc().id;
-      final dayFolder = DateFormat('dd-MM-yyyy').format(now);
-      final timestamp = DateFormat('ddMMyyyyHHmmss').format(now);
+      final dayFolder = DateFormat('dd-MM-yyyy').format(DateTime.now());
+      final timestamp = DateFormat('ddMMyyyyHHmmss').format(DateTime.now());
       final patente = state.patenteController.text.toUpperCase().replaceAll(' ', '');
 
       final String nameP = "${timestamp}_${idInfraccion}_foto_patente_$patente.jpg";
@@ -174,34 +162,27 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
       final File fileP = await File(state.imagenPatente!.path).copy('${localPath.path}/$nameP');
       final File fileE = await File(state.imagenEntorno!.path).copy('${localPath.path}/$nameE');
 
-      final Map<String, dynamic> datosJson = {
-        'id': idInfraccion,
-        'localidad_id': widget.localidadId,
-        'patente': patente,
-        'marca': state.marcaController.text.toUpperCase(),
-        'modelo': state.modeloController.text.toUpperCase(),
-        'ubicacion': {'calle': state.calleController.text.toUpperCase(), 'nro': state.numeroController.text.toUpperCase(), 'gps': state.ubicacionGps},
-        'infraccion': state.tipoInfraccionController.text.toUpperCase(),
-        'observaciones': state.observacionesController.text.toUpperCase(),
-        'fecha_hora': now.toIso8601String(),
-        'registrado_por': widget.userName,
-      };
+      // Agregamos las rutas locales al mapa de datos que vino de ConfirmacionScreen
+      datosCompletos['id'] = idInfraccion;
+      datosCompletos['fecha_carpeta'] = dayFolder;
+      datosCompletos['nombre_archivo_patente'] = nameP;
+      datosCompletos['nombre_archivo_entorno'] = nameE;
+      datosCompletos['nombre_archivo_dato'] = nameD;
+      datosCompletos['ruta_local_patente'] = fileP.path;
+      datosCompletos['ruta_local_entorno'] = fileE.path;
+      datosCompletos['ruta_local_dato'] = '${localPath.path}/$nameD';
+      datosCompletos['dato_url'] = '';
+      datosCompletos['foto_entorno_url'] = '';
+      datosCompletos['foto_patente_url'] = '';
+      datosCompletos['fotos_subidas'] = false;
       
       final File fileD = File('${localPath.path}/$nameD');
-      await fileD.writeAsString(const JsonEncoder.withIndent('  ').convert(datosJson));
+      await fileD.writeAsString(const JsonEncoder.withIndent('  ').convert(datosCompletos));
 
-      FirebaseFirestore.instance.collection('infracciones').doc(idInfraccion).set({
-        ...datosJson,
-        'fecha': FieldValue.serverTimestamp(),
-        'fotos_subidas': false,
-        'ruta_local_patente': fileP.path,
-        'ruta_local_entorno': fileE.path,
-        'ruta_local_dato': fileD.path,
-        'nombre_archivo_patente': nameP,
-        'nombre_archivo_entorno': nameE,
-        'nombre_archivo_dato': nameD,
-        'fecha_carpeta': dayFolder,
-      });
+      final Map<String, dynamic> firestoreData = Map.from(datosCompletos);
+      firestoreData['fecha'] = FieldValue.serverTimestamp(); // Obligatorio para Firestore
+
+      await FirebaseFirestore.instance.collection('infracciones').doc(idInfraccion).set(firestoreData);
 
       if (!mounted) return;
       
@@ -231,25 +212,51 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
       return;
     }
 
-    final datos = {
-      'patente': state.patenteController.text,
-      'marca': state.marcaController.text,
-      'modelo': state.modeloController.text,
-      'ubicacion': {'calle': state.calleController.text, 'nro': state.numeroController.text, 'gps': state.ubicacionGps},
-      'infraccion': state.tipoInfraccionController.text,
-      'observaciones': state.observacionesController.text,
+    // Buscamos la infracción seleccionada en el catálogo
+    final infraccionSeleccionada = state.catalogoInfracciones.firstWhere(
+      (inf) => inf['titulo'] == state.tipoInfraccionController.text,
+      orElse: () => {}
+    );
+
+    double montoTotal = 0.0;
+    if (state.valorizacionActiva && infraccionSeleccionada.isNotEmpty) {
+      final double ufMinimas = (infraccionSeleccionada['uf_minimas'] ?? 0).toDouble();
+      montoTotal = ufMinimas * state.valorUf;
+    }
+
+    // Estructura oficial limpia y estandarizada
+    final datosEstandar = {
+      'id': '', // Se asignará en _finalizarYRegistrar
+      'localidad_id': widget.localidadId,
+      'patente': state.patenteController.text.toUpperCase().replaceAll(' ', ''),
+      'infraccion': state.tipoInfraccionController.text.toUpperCase(),
+      'infraccion_codigo': infraccionSeleccionada['codigo'] ?? '',
+      'infraccion_uf': infraccionSeleccionada['uf_minimas'] ?? 0,
+      'valor_uf_aplicado': state.valorUf,
+      'monto_total_calculado': montoTotal,
+      'fecha': '', // FieldValue.serverTimestamp() se añade al guardar
+      'fecha_carpeta': '',
       'fecha_hora': DateTime.now().toIso8601String(),
+      'marca': state.marcaController.text.toUpperCase(),
+      'modelo': state.modeloController.text.toUpperCase(),
+      'ubicacion': {
+        'calle': state.calleController.text.toUpperCase(), 
+        'nro': state.numeroController.text.toUpperCase(), 
+        'gps': state.ubicacionGps
+      },
+      'observaciones': state.observacionesController.text.toUpperCase(),
       'registrado_por': widget.userName,
+      // Los campos de archivos se llenan en _finalizarYRegistrar
     };
 
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => ConfirmacionScreen(
-          data: datos,
+          data: datosEstandar,
           imagenPatente: state.imagenPatente!,
           imagenEntorno: state.imagenEntorno!,
-          onConfirm: _finalizarYRegistrar,
+          onConfirm: () => _finalizarYRegistrar(datosEstandar),
         ),
       ),
     );
@@ -279,6 +286,13 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
     final Color colorTextoPrimario = isDark ? Colors.white : const Color(0xFF1A1F2E);
     final Color colorTextoSecundario = isDark ? Colors.white38 : Colors.black38;
 
+    // A prueba de fallos: Filtramos los nulls y nos aseguramos de que sean Strings válidos
+    final List<String> opcionesInfraccion = state.catalogoInfracciones
+        .map((inf) => inf['titulo'])
+        .where((titulo) => titulo != null && titulo.toString().trim().isNotEmpty)
+        .map((titulo) => titulo.toString())
+        .toList();
+
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 80,
@@ -299,7 +313,6 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
         SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           child: Form(key: _formKey, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // Row of photos
             Row(children: [
               Expanded(child: _buildPhotoCard('PATENTE', state.imagenPatente, () => _pickImage(true), fondoTarjeta, colorTextoSecundario)),
               const SizedBox(width: 15),
@@ -322,17 +335,16 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
             const SizedBox(height: 30),
 
             _buildHeaderTitle('INFRACCIÓN', isDark),
-            _buildInfraccionDropdown(state.tipoInfraccionController, 'Seleccionar infracción', _infraccionesSugeridas, fondoTarjeta, colorTextoSecundario, colorTextoPrimario),
+            // Si la lista está vacía, mostramos un mensaje de advertencia seguro
+            _buildInfraccionDropdown(state.tipoInfraccionController, 'Seleccionar infracción', opcionesInfraccion.isNotEmpty ? opcionesInfraccion : ['(Sin infracciones cargadas)'], fondoTarjeta, colorTextoSecundario, colorTextoPrimario),
             const SizedBox(height: 15),
             _buildObservationsField(state.observacionesController, 'Añadir observaciones adicionales...', fondoTarjeta, colorTextoPrimario, colorTextoSecundario),
             
             const SizedBox(height: 40),
 
-            // STEP INDICATOR (MOVED BELOW)
             _buildStepIndicator(formComplete, isDark),
             const SizedBox(height: 15),
             
-            // CONFIRM BUTTON (DYNAMIC COLOR)
             _buildConfirmButton(formComplete, isDark),
             const SizedBox(height: 30),
           ])),
@@ -510,7 +522,7 @@ class _InfraccionFormState extends State<InfraccionForm> with SingleTickerProvid
                 if (label != null) Text(label, style: TextStyle(color: textoSec, fontSize: 10)),
                 TextFormField(
                   controller: controller,
-                  inputFormatters: label == 'Modelo' ? [UpperCaseTextFormatter()] : null, // Mayúscula forzada para Modelo
+                  inputFormatters: label == 'Modelo' ? [UpperCaseTextFormatter()] : null,
                   style: TextStyle(color: textoPri, fontWeight: FontWeight.w500),
                   decoration: InputDecoration(
                     hintText: placeholder,

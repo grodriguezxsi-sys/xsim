@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -------------------------------------------------------------------------
+    // FUNCIONES GLOBALES
+    // -------------------------------------------------------------------------
+    function isAutorizado() {
+      return request.auth != null && exists(/databases/$(database)/documents/usuarios/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data;
+    }
+
+    // -------------------------------------------------------------------------
+    // COLECCION DE USUARIOS
+    // -------------------------------------------------------------------------
+    match /usuarios/{userId} {
+      allow read: if request.auth != null && (request.auth.uid == userId || getUserData().rol == 'admin');
+      allow update: if isAutorizado() && getUserData().rol == 'admin';
+      allow delete: if isAutorizado() && getUserData().rol == 'admin' && request.auth.uid != userId;
+      allow create: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // CATALOGO DE INFRACCIONES
+    // -------------------------------------------------------------------------
+    match /catalogo_infracciones/{document=**} {
+      allow read: if isAutorizado();
+      allow write: if isAutorizado() && getUserData().rol == 'admin';
+    }
+
+    // -------------------------------------------------------------------------
+    // CONFIGURACION DE LOCALIDADES
+    // -------------------------------------------------------------------------
+    match /config_localidades/{document=**} {
+      allow read: if isAutorizado();
+      allow write: if isAutorizado() && getUserData().rol == 'admin';
+    }
+
+    // -------------------------------------------------------------------------
+    // COLECCION DE INFRACCIONES
+    // -------------------------------------------------------------------------
+    match /infracciones/{docId} {
+
+      // CONSULTA CIUDADANA PÚBLICA
+      allow list: if request.query.limit <= 20 && request.query.filters.patente != null;
+      allow get: if true;
+
+      // PERMISOS DE APP Y DASHBOARD
+      allow create: if isAutorizado();
+
+      allow update: if isAutorizado() && (
+        getUserData().rol == 'admin' ||
+        getUserData().localidad_id == resource.data.localidad_id
+      );
+
+      allow read: if isAutorizado() && (
+        getUserData().rol == 'admin' ||
+        getUserData().localidad_id == resource.data.localidad_id
+      );
+
+      allow delete: if false;
+    }
+  }
+}

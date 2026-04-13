@@ -17,6 +17,13 @@ class ConnectivityService with ChangeNotifier {
   String? localidadId;
   bool userDataLoaded = false;
 
+  // --- CONFIGURACIÓN DE LOCALIDAD ---
+  double valorUf = 0.0;
+  bool valorizacionActiva = false;
+
+  // --- CATÁLOGO DINÁMICO DE INFRACCIONES ---
+  List<Map<String, dynamic>> catalogoInfracciones = [];
+
   final patenteController = TextEditingController();
   final marcaController = TextEditingController();
   final modeloController = TextEditingController();
@@ -76,12 +83,46 @@ class ConnectivityService with ChangeNotifier {
 
   Future<void> loadUserData(String uid) async {
     try {
-      final doc = await FirebaseFirestore.instance.collection('usuarios').doc(uid).get();
-      if (doc.exists) {
-        final data = doc.data();
+      // 1. Obtener datos del usuario
+      final docUser = await FirebaseFirestore.instance.collection('usuarios').doc(uid).get();
+      if (docUser.exists) {
+        final data = docUser.data();
         localidadId = data?['localidad_id'];
         userName = data?['nombre'];
         debugPrint("Usuario cargado: $userName de $localidadId");
+
+        // 2. Cargar configuración de la localidad (valor UF)
+        if (localidadId != null) {
+          try {
+            final docConfig = await FirebaseFirestore.instance.collection('config_localidades').doc(localidadId).get();
+            if (docConfig.exists) {
+              final configData = docConfig.data();
+              valorUf = (configData?['valor_uf'] ?? 0.0).toDouble();
+              valorizacionActiva = configData?['valorizacion_activa'] ?? false;
+              debugPrint("Configuración cargada: UF=$valorUf, Activa=$valorizacionActiva");
+            } else {
+              debugPrint("No se encontró configuración para la localidad: $localidadId");
+              valorUf = 0.0;
+              valorizacionActiva = false;
+            }
+          } catch (e) {
+             debugPrint("Error al cargar config_localidades: $e");
+          }
+        }
+
+        // 3. Cargar el Catálogo de Infracciones
+        try {
+          final catalogoSnapshot = await FirebaseFirestore.instance.collection('catalogo_infracciones').get();
+          catalogoInfracciones = catalogoSnapshot.docs.map((doc) {
+            var data = doc.data();
+            data['id'] = doc.id; // Guardamos también el ID del documento
+            return data;
+          }).toList();
+          debugPrint("Se cargaron ${catalogoInfracciones.length} infracciones al catálogo.");
+        } catch (e) {
+          debugPrint("Error cargando el catalogo_infracciones: $e");
+        }
+
         startPendingUploadsListener(); 
       } else {
         debugPrint("El documento de usuario no existe en Firestore.");
@@ -98,6 +139,9 @@ class ConnectivityService with ChangeNotifier {
   void reset() {
     userName = null;
     localidadId = null;
+    valorUf = 0.0;
+    valorizacionActiva = false;
+    catalogoInfracciones = []; // Limpiar catálogo al salir
     userDataLoaded = false;
     _pendingUploadsSubscription?.cancel();
     clearForm();
@@ -141,7 +185,6 @@ class ConnectivityService with ChangeNotifier {
           String? urlP, urlE, urlD;
           bool todasSubidas = true;
 
-          // 1. Subir Patente (Obligatoria)
           if (data['ruta_local_patente'] != null) {
             final fileP = File(data['ruta_local_patente']);
             if (await fileP.exists()) {
@@ -156,7 +199,6 @@ class ConnectivityService with ChangeNotifier {
              todasSubidas = false;
           }
 
-          // 2. Subir Entorno (Obligatoria)
           if (data['ruta_local_entorno'] != null && todasSubidas) {
             final fileE = File(data['ruta_local_entorno']);
             if (await fileE.exists()) {
@@ -171,7 +213,6 @@ class ConnectivityService with ChangeNotifier {
              todasSubidas = false;
           }
 
-          // 3. Subir Dato (Opcional/Texto)
           if (data['ruta_local_dato'] != null && todasSubidas) {
             final fileD = File(data['ruta_local_dato']);
             if (await fileD.exists()) {
@@ -181,7 +222,6 @@ class ConnectivityService with ChangeNotifier {
             }
           }
 
-          // 4. SOLO actualizar Firestore si las fotos se subieron bien
           if (todasSubidas && urlP != null && urlE != null) {
             await FirebaseFirestore.instance.collection('infracciones').doc(id).update({
               'fotos_subidas': true,
@@ -196,7 +236,6 @@ class ConnectivityService with ChangeNotifier {
 
         } catch (e) { 
           debugPrint("Error subiendo archivos de acta $id a Storage: $e"); 
-          // Si falla el putFile de Storage, salta al catch y NO actualiza Firestore
         }
       }
     } catch (e) {
